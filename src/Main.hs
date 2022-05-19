@@ -7,7 +7,12 @@
 
 module Main where
 
+
 import Configuration
+    ( defaultConfiguration,
+      updateGithubAccessToken,
+      updateGithubRoot,
+      Configuration )
 
 import Servant
     ( serve,
@@ -19,6 +24,10 @@ import Servant
       Handler,
       hoistServer,
       JSON ) 
+
+import Servant.Auth as SA
+import Servant.Auth.Server as SA
+  
 import           Control.Concurrent          (forkIO, killThread)
 import           Control.Concurrent.STM.TVar (TVar, newTVar, readTVar,
                                               writeTVar)
@@ -40,6 +49,17 @@ import Network.Wai.Handler.Warp
 import Configuration.Dotenv (loadFile, defaultConfig)
 
 import           Data.Aeson                  (FromJSON, ToJSON)
+import Data.Text  
+
+data User = User { username :: !Text
+                 , firstName :: !Text
+                 , lastName :: !Text
+                 , email :: !Text
+                 }
+          deriving (Show, Generic)
+
+instance FromJSON User
+instance ToJSON User 
 
 newtype Book = Book String deriving (Show, Generic)
 instance ToJSON Book
@@ -50,7 +70,6 @@ type BooksAPI = "books" :> (GetBooks)
 
 api :: Proxy BooksAPI
 api = Proxy
-
                        
 type AppM = ReaderT Configuration Handler
 

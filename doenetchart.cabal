@@ -43,7 +43,9 @@ executable doenetchart
                      , monad-logger
                      , mtl
                      , servant
+                     , servant-auth
                      , servant-server
+                     , servant-auth-server
                      , wai-logger 
                      , dotenv
                      , stm
