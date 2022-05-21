@@ -34,22 +34,24 @@ import           Control.Concurrent.STM.TVar (TVar, newTVar, readTVar,
 
 import           Control.Exception           (bracket)
 import           Control.Monad.IO.Class      (liftIO)
+import           Control.Monad.Except        (liftEither, throwError)
 import           Control.Monad.STM           (atomically)
-import           Control.Monad.Trans.Reader  (ReaderT, ask, runReaderT)
+import           Control.Monad.Trans.Reader  (ReaderT, ask, asks, runReaderT)
 
 import           GHC.Generics                (Generic)
 import           Network.Wai.Handler.Warp    (run)
 
 import System.Environment (lookupEnv)
 
-import Servant.Server (Handler, Server, Application, serve)
+import Servant.Server (Handler, Server, Application, serve, err500)
 import Network.Wai.Logger (withStdoutLogger)
 import Network.Wai.Handler.Warp
     (setLogger, setPort, getPort, runSettings, defaultSettings )
 import Configuration.Dotenv (loadFile, defaultConfig)
 
 import           Data.Aeson                  (FromJSON, ToJSON)
-import Data.Text  
+import Data.Text ( Text )  
+import qualified Database.Redis as R
 
 data User = User { username :: !Text
                  , firstName :: !Text
@@ -70,20 +72,33 @@ type BooksAPI = "books" :> (GetBooks)
 
 api :: Proxy BooksAPI
 api = Proxy
+
+data AppCtx = AppCtx { getConfiguration :: Configuration
+                     , getConnection :: R.Connection 
+                     }
                        
-type AppM = ReaderT Configuration Handler
+type AppM = ReaderT AppCtx Handler
+
+runRedis :: R.Redis a -> AppM a
+runRedis redis = do
+   conn <- asks getConnection
+   liftIO $ R.runRedis conn redis
 
 server :: ServerT BooksAPI AppM
 server = getBooks 
   where getBooks :: AppM [Book]
         getBooks = do
-          return []
+          hello <- runRedis $ do
+            R.get "hello"
+          case hello of
+            Right result -> return [Book $ show result] 
+            Left _ -> throwError err500
 
 -- natural transformation from the AppM monad to the Handler
-nt :: Configuration -> AppM a -> Handler a
+nt :: AppCtx -> AppM a -> Handler a
 nt s x = runReaderT x s
 
-app :: Configuration -> Application
+app :: AppCtx -> Application
 app s = serve api $ hoistServer api (nt s) server
 
 main :: IO ()
@@ -100,4 +115,10 @@ main = do
 
   putStrLn $ "Listening on port " ++ show (getPort settings)
 
-  runSettings settings $ app config
+  redisConnectionString <- lookupEnv "REDIS"
+  let connectInfo = maybe (Right R.defaultConnectInfo) R.parseConnectInfo redisConnectionString
+  conn <- either error R.checkedConnect connectInfo
+
+  let context = AppCtx { getConfiguration = config, getConnection = conn }
+      
+  runSettings settings $ app context
