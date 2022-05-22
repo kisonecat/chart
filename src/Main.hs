@@ -3,19 +3,18 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE DeriveGeneric #-}
 
 module Main where
 
 
 import Configuration
-    ( defaultConfiguration,
-      updateGithubAccessToken,
-      updateGithubRoot,
-      Configuration )
 
 import Servant
-    ( serve,
+    ( serveWithContext,
+      Context(EmptyContext),
+      Context( (:.) ),
       type (:>),
       Get,
       HasServer(ServerT),
@@ -26,7 +25,7 @@ import Servant
       JSON ) 
 
 import Servant.Auth as SA
-import Servant.Auth.Server as SA
+import Servant.Auth.Server as SAS
   
 import           Control.Concurrent          (forkIO, killThread)
 import           Control.Concurrent.STM.TVar (TVar, newTVar, readTVar,
@@ -52,16 +51,29 @@ import Configuration.Dotenv (loadFile, defaultConfig)
 import           Data.Aeson                  (FromJSON, ToJSON)
 import Data.Text ( Text )  
 import qualified Database.Redis as R
+import Data.String.Conversions (cs)
 
 data User = User { username :: !Text
-                 , firstName :: !Text
-                 , lastName :: !Text
-                 , email :: !Text
+                 , chart :: !Text
                  }
           deriving (Show, Generic)
 
 instance FromJSON User
 instance ToJSON User 
+instance ToJWT User
+instance FromJWT User
+
+-- this is just a fake stub for now
+authCheck :: Configuration -> R.Connection
+          -> BasicAuthData
+          -> IO (AuthResult User)
+authCheck config _connection (BasicAuthData login _password) = pure $
+  maybe SAS.Indefinite Authenticated $ Just $ User { username = cs login, chart = cs $ getHostname config }
+
+type instance BasicAuthCfg = BasicAuthData -> IO (AuthResult User)
+
+instance FromBasicAuthData User where
+  fromBasicAuthData authData authCheckFunction = authCheckFunction authData
 
 newtype Book = Book String deriving (Show, Generic)
 instance ToJSON Book
@@ -98,20 +110,27 @@ server = getBooks
 nt :: AppCtx -> AppM a -> Handler a
 nt s x = runReaderT x s
 
-app :: AppCtx -> Application
-app s = serve api $ hoistServer api (nt s) server
+app :: AppCtx -> IO Application
+app ctx = do
+  myKey <- generateKey
+  let jwtCfg = defaultJWTSettings myKey
+      authCfg = authCheck (getConfiguration ctx) (getConnection ctx)
+      cfg = jwtCfg :. defaultCookieSettings :. authCfg :. EmptyContext
+  pure $ serveWithContext api cfg $ hoistServer api (nt ctx) server
 
 main :: IO ()
 main = do
   -- with this, lookupEnv will fetch from .env or from an environment variable
   _ <- Configuration.Dotenv.loadFile Configuration.Dotenv.defaultConfig
 
+  hostname <- lookupEnv "HOSTNAME"
+
   port <- lookupEnv "PORT"
-  let settings = maybe id (setPort . read) port $ defaultSettings
+  let settings = maybe id (setPort . read) port defaultSettings
   
   root <- lookupEnv "GITHUB_ROOT"
   accessToken <- lookupEnv "GITHUB_ACCESS_TOKEN"
-  let config = updateGithubRoot root $ updateGithubAccessToken accessToken $ defaultConfiguration
+  let config = updateGithubRoot root $ updateGithubAccessToken accessToken $ updateHostname hostname $ defaultConfiguration
 
   putStrLn $ "Listening on port " ++ show (getPort settings)
 
@@ -121,4 +140,4 @@ main = do
 
   let context = AppCtx { getConfiguration = config, getConnection = conn }
       
-  runSettings settings $ app context
+  runSettings settings =<< app context

@@ -50,6 +50,8 @@ executable doenetchart
                      , dotenv
                      , stm
                      , hedis
+                     , scrypt
+                     , string-conversions
                      , text
                      , transformers
                      , wai
