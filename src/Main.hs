@@ -12,18 +12,6 @@ module Main where
 import Configuration
 
 import Servant
-    ( serveWithContext,
-      Context(EmptyContext),
-      Context( (:.) ),
-      type (:>),
-      Get,
-      HasServer(ServerT),
-      Proxy(..),
-      Application,
-      Handler,
-      hoistServer,
-      JSON ) 
-
 import Servant.Auth as SA
 import Servant.Auth.Server as SAS
   
@@ -42,7 +30,7 @@ import           Network.Wai.Handler.Warp    (run)
 
 import System.Environment (lookupEnv)
 
-import Servant.Server (Handler, Server, Application, serve, err500)
+import Servant.Server
 import Network.Wai.Logger (withStdoutLogger)
 import Network.Wai.Handler.Warp
     (setLogger, setPort, getPort, runSettings, defaultSettings )
@@ -80,7 +68,11 @@ instance ToJSON Book
 instance FromJSON Book
 
 type GetBooks = Get '[JSON] [Book]
-type BooksAPI = "books" :> (GetBooks)
+
+type SecureBooksAPI =
+  SAS.Auth '[SA.JWT, SA.BasicAuth] User :> Get '[JSON] [Book]
+
+type BooksAPI = ("books" :> GetBooks) :<|> ("secure" :> SecureBooksAPI )
 
 api :: Proxy BooksAPI
 api = Proxy
@@ -96,8 +88,8 @@ runRedis redis = do
    conn <- asks getConnection
    liftIO $ R.runRedis conn redis
 
-server :: ServerT BooksAPI AppM
-server = getBooks 
+server :: SAS.CookieSettings -> SAS.JWTSettings -> ServerT BooksAPI AppM
+server cookies jwt = getBooks :<|> getSecure 
   where getBooks :: AppM [Book]
         getBooks = do
           hello <- runRedis $ do
@@ -105,6 +97,9 @@ server = getBooks
           case hello of
             Right result -> return [Book $ show result] 
             Left _ -> throwError err500
+        getSecure :: AuthResult User -> AppM [Book]
+        getSecure (SAS.Authenticated _adminUser)  = pure [] 
+        getSecure _ = throwError err401 
 
 -- natural transformation from the AppM monad to the Handler
 nt :: AppCtx -> AppM a -> Handler a
@@ -115,8 +110,9 @@ app ctx = do
   myKey <- generateKey
   let jwtCfg = defaultJWTSettings myKey
       authCfg = authCheck (getConfiguration ctx) (getConnection ctx)
-      cfg = jwtCfg :. defaultCookieSettings :. authCfg :. EmptyContext
-  pure $ serveWithContext api cfg $ hoistServer api (nt ctx) server
+      cookies = defaultCookieSettings 
+      cfg = jwtCfg :. cookies :. authCfg :. EmptyContext
+  pure $ serveWithContext api cfg $ hoistServerWithContext api (Proxy :: Proxy '[BasicAuthData -> IO (AuthResult User), SAS.CookieSettings, SAS.JWTSettings]) (nt ctx) (server cookies jwtCfg)
 
 main :: IO ()
 main = do
