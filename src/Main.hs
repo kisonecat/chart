@@ -11,6 +11,11 @@ module Main where
 
 
 import Configuration
+    ( defaultConfiguration,
+      updateHostname,
+      updateGithubAccessToken,
+      updateGithubRoot,
+      Configuration(getHostname) )
 
 import Servant
 import Servant.Auth as SA
@@ -49,6 +54,10 @@ import Data.Text ( Text )
 import qualified Database.Redis as R
 import Data.String.Conversions (cs)
 import qualified Data.ByteString as BS
+  
+import Data.X509.File ( readKeyFile )
+import Data.X509 ( PrivKey(PrivKeyRSA) )
+
 
 data AuthenticatedUser = AuthenticatedUser { name :: !Text
                                            , chart :: !Text
@@ -106,7 +115,8 @@ api :: Proxy UserTokenAPI
 api = Proxy
 
 data AppCtx = AppCtx { getConfiguration :: Configuration
-                     , getConnection :: R.Connection 
+                     , getConnection :: R.Connection
+                     , getJWK :: JWK
                      }
                        
 type AppM = ReaderT AppCtx Handler
@@ -115,8 +125,6 @@ runRedis :: R.Redis a -> AppM a
 runRedis redis = do
    conn <- asks getConnection
    liftIO $ R.runRedis conn redis
-
-
 
 bestAlg :: AuthenticatedUser -> SAS.JWTSettings -> IO (Either Crypto.JOSE.Error Crypto.JWT.SignedJWT)
 bestAlg u jwt  = runExceptT $ do
@@ -163,8 +171,8 @@ nt s x = runReaderT x s
 
 app :: AppCtx -> IO Application
 app ctx = do
-  myKey <- generateKey
-  let jwtCfg = defaultJWTSettings myKey
+  let myKey = getJWK ctx 
+      jwtCfg = defaultJWTSettings myKey
       authCfg = authCheck (getConfiguration ctx) (getConnection ctx)
       cookies = defaultCookieSettings 
       cfg = jwtCfg :. cookies :. authCfg :. EmptyContext
@@ -183,6 +191,12 @@ main = do
   root <- lookupEnv "GITHUB_ROOT"
   accessToken <- lookupEnv "GITHUB_ACCESS_TOKEN"
   let config = updateGithubRoot root $ updateGithubAccessToken accessToken $ updateHostname hostname $ defaultConfiguration
+  
+  privateKeyFilename <- lookupEnv "PRIVATE_KEY"
+  certs <- maybe (pure []) readKeyFile privateKeyFilename
+  jwk <- case certs of
+    [PrivKeyRSA key] -> pure $ fromRSA key
+    _ -> error "Expected the file $PRIVATE_KEY to contain an RSA key"
 
   putStrLn $ "Listening on port " ++ show (getPort settings)
 
@@ -190,6 +204,6 @@ main = do
   let connectInfo = maybe (Right R.defaultConnectInfo) R.parseConnectInfo redisConnectionString
   conn <- either error R.checkedConnect connectInfo
 
-  let context = AppCtx { getConfiguration = config, getConnection = conn }
+  let context = AppCtx { getJWK = jwk, getConfiguration = config, getConnection = conn }
       
   runSettings settings =<< app context

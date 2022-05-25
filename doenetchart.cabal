@@ -48,6 +48,8 @@ executable doenetchart
                      , servant-auth-server
                      , jose
                      , http-media
+                     , x509-store
+                     , x509
                      , wai-logger 
                      , dotenv
                      , stm

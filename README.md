@@ -17,6 +17,8 @@ I use Nix and cabal.
 
 ```
 nix-shell
+openssl genrsa -out key.pem 4096
 cabal build doenetchart
 cabal run doenetchart
 ```
+
