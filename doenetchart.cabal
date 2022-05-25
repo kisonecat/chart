@@ -46,6 +46,8 @@ executable doenetchart
                      , servant-auth
                      , servant-server
                      , servant-auth-server
+                     , jose
+                     , http-media
                      , wai-logger 
                      , dotenv
                      , stm
