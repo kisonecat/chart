@@ -1,6 +1,5 @@
 module Configuration where
 
-
 data Configuration = Configuration { getGithubRoot :: String ,
                                      getGithubAccessToken :: String,
                                      getHostname :: String

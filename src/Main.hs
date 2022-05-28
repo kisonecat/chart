@@ -35,7 +35,7 @@ import           GHC.Generics                (Generic)
 import           Network.Wai.Handler.Warp    (run)
 
 import qualified Crypto.JOSE.JWK as JOSE
-import Crypto.JOSE 
+import Crypto.JOSE
 import Crypto.JWT (signClaims, SignedJWT)
 import Crypto.JOSE.JWS (newJWSHeader)
 
@@ -49,7 +49,7 @@ import Network.Wai.Handler.Warp
     (setLogger, setPort, getPort, runSettings, defaultSettings )
 import Configuration.Dotenv (loadFile, defaultConfig)
 
-import           Data.Aeson                  (FromJSON, ToJSON)
+import Data.Aeson
 import Data.Text ( Text )  
 import qualified Database.Redis as R
 import Data.String.Conversions (cs)
@@ -58,19 +58,32 @@ import qualified Data.ByteString as BS
 import Data.X509.File ( readKeyFile )
 import Data.X509 ( PrivKey(PrivKeyRSA) )
 
+import qualified Data.ByteString.Char8 as C8
+import Network.Wai (Middleware, remoteHost)
+import Network.Wai.Logger (withStdoutLogger)
+
+import JsonWorkProof
 
 data AuthenticatedUser = AuthenticatedUser { name :: !Text
                                            , chart :: !Text
                                            }
                        deriving (Show, Generic)
 
-data User = User { userId :: !Text 
-                 , firstName :: !Text
+data User = User { firstName :: !Text
                  , lastName :: !Text
                  , email :: !Text
                  }
-          deriving (Show, Generic)
+          deriving Show
 
+instance FromJSON User where
+    parseJSON (Object v) = User <$> v .: "firstName"
+                                <*> v .: "lastName"
+                                <*> v .: "email" 
+    parseJSON _ = pure $ User { firstName = "", lastName = "", email = "" } 
+
+instance ToJSON User where
+    toJSON (User firstName lastName email) = object ["firstName" .= firstName, "lastName" .= lastName, "email" .= email]
+    
 instance FromJSON AuthenticatedUser
 instance ToJSON AuthenticatedUser 
 instance ToJWT AuthenticatedUser
@@ -100,23 +113,13 @@ type UserCrudAPI = Get '[JSON] User :<|> (ReqBody '[JSON] User :> (Put '[JSON] U
 type UserTokenAPI = SAS.Auth '[SA.BasicAuth] AuthenticatedUser :> ( ("token" :> Get '[JSONWebToken] SignedJWT ) :<|> ("authorize" :> Get '[JSON] ()) )
 type UserAPI = SAS.Auth '[SA.JWT, SA.BasicAuth] AuthenticatedUser :> "users" :> Capture "username" Text :> (UserTokenAPI :<|> UserCrudAPI)
 
-newtype Book = Book String deriving (Show, Generic)
-instance ToJSON Book
-instance FromJSON Book
-
-type GetBooks = Get '[JSON] [Book]
-
-type SecureBooksAPI =
-  SAS.Auth '[SA.JWT, SA.BasicAuth] AuthenticatedUser :> Get '[JSON] [Book]
-
-type BooksAPI = ("books" :> GetBooks) :<|> ("secure" :> SecureBooksAPI )
-
 api :: Proxy UserTokenAPI 
 api = Proxy
 
 data AppCtx = AppCtx { getConfiguration :: Configuration
                      , getConnection :: R.Connection
                      , getJWK :: JWK
+                     , getSymmetricJWK :: JWK
                      }
                        
 type AppM = ReaderT AppCtx Handler
@@ -178,8 +181,24 @@ app ctx = do
       cfg = jwtCfg :. cookies :. authCfg :. EmptyContext
   pure $ serveWithContext api cfg $ hoistServerWithContext api (Proxy :: Proxy '[BasicAuthData -> IO (AuthResult AuthenticatedUser), SAS.CookieSettings, SAS.JWTSettings]) (nt ctx) (server cookies jwtCfg)
 
+--middleware :: R.Connection -> Middleware
+--middleware conn = rateLimiting strategy
+--    where backend = redisBackend conn
+--          getKey = pure . C8.pack . show . remoteHost
+--          strategy = fixedWindow backend 59 1 getKey
+
+middleware :: R.Connection -> Middleware
+middleware _ = id
+
 main :: IO ()
 main = do
+  let jwp = decodeJWP "eyJ0eXAiOiAiSldQIiwgImFsZyI6ICJTSEEyNTYiLCAiZGlmIjogMTB9.eyJoZWxsbyI6ICJ3b3JsZCIsICJjb3VudCI6IDg4LCAiZXhwIjogMTY1Mzc3ODMzNC4wNDY0Mzl9.y1Iw4WeHBIuUT_ncwpdqDQBW4"
+
+  r <- either error JsonWorkProof.verify jwp 
+  putStrLn $ show $ r
+
+main2 :: IO ()
+main2 = do
   -- with this, lookupEnv will fetch from .env or from an environment variable
   _ <- Configuration.Dotenv.loadFile Configuration.Dotenv.defaultConfig
 
@@ -194,9 +213,11 @@ main = do
   
   privateKeyFilename <- lookupEnv "PRIVATE_KEY"
   certs <- maybe (pure []) readKeyFile privateKeyFilename
-  jwk <- case certs of
+  jwkRsa <- case certs of
     [PrivKeyRSA key] -> pure $ fromRSA key
     _ -> error "Expected the file $PRIVATE_KEY to contain an RSA key"
+
+  symmetricJwk <- generateKey
 
   putStrLn $ "Listening on port " ++ show (getPort settings)
 
@@ -204,6 +225,9 @@ main = do
   let connectInfo = maybe (Right R.defaultConnectInfo) R.parseConnectInfo redisConnectionString
   conn <- either error R.checkedConnect connectInfo
 
-  let context = AppCtx { getJWK = jwk, getConfiguration = config, getConnection = conn }
-      
-  runSettings settings =<< app context
+  let context = AppCtx { getJWK = jwkRsa, getSymmetricJWK = symmetricJwk, getConfiguration = config, getConnection = conn }
+
+  withStdoutLogger $ \aplogger -> do
+    let settingsWithLog = setLogger aplogger settings
+    theApp <- app context
+    runSettings settingsWithLog $ middleware conn theApp

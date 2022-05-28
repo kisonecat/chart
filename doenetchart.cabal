@@ -26,8 +26,8 @@ executable doenetchart
   -- .hs or .lhs file containing the Main module.
   main-is:             Main.hs
 
-  other-modules:
-    Configuration
+  other-modules:       Configuration
+                     , JsonWorkProof
   
   -- LANGUAGE extensions used by modules in this package.
   -- other-extensions:
@@ -59,7 +59,12 @@ executable doenetchart
                      , text
                      , transformers
                      , wai
+                     , wai-logger
                      , warp
+                     , base64-bytestring
+                     , cryptonite
+                     , memory
+                     , time
 
   -- Directories containing source files.
   hs-source-dirs:      src
