@@ -1,6 +1,6 @@
 # Charts for plotting (academic) courses
 
-A 'chart' is a node in a decentralized network of gradebooks, and it stores local data for learners and their progress on worksheets.  A navigational chart helps plan geographical courses; these charts helps plan (academic) courses.  In summary, a chart
+A 'chart' is a node in a decentralized network of gradebooks, and it stores local data for learners and their progress on worksheets.  A navigational chart helps plan geographical courses; these charts helps plan (academic) courses.  In summary, a chart:
 
 - provides identity for learners
 - handles course enrollment
@@ -22,3 +22,8 @@ cabal build doenetchart
 cabal run doenetchart
 ```
 
+# To demonstrate LTI 1.3 support
+
+https://github.com/scollovati/awesome-lti
+
+https://saltire.lti.app/platform

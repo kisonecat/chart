@@ -28,13 +28,17 @@ executable doenetchart
 
   other-modules:       Configuration
                      , JsonWorkProof
+                     , Authentication
+                     , User
+                     , AppM
+                     , LTI
   
   -- LANGUAGE extensions used by modules in this package.
   -- other-extensions:
 
   -- Other library packages from which modules are imported.
-  build-depends:       base >=4.14.3.0 
-                     , aeson
+  build-depends:       base
+                     , aeson ==1.5.6.0
                      , bytestring
                      , containers
                      , http-api-data
@@ -63,6 +67,7 @@ executable doenetchart
                      , warp
                      , base64-bytestring
                      , cryptonite
+                     , lti13
                      , memory
                      , time
 
