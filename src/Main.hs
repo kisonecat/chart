@@ -32,7 +32,6 @@ import Crypto.JOSE
 import Crypto.JWT (signClaims, SignedJWT)
 import Crypto.JOSE.JWS (newJWSHeader)
 
-
 import System.Environment (lookupEnv)
 
 import Servant.Server
@@ -146,8 +145,13 @@ main = do
 
   putStrLn $ "Listening on port " ++ show (getPort settings)
 
+  redisConnectionSocket <- lookupEnv "REDIS_SOCKET"
+  let f s = Right R.defaultConnectInfo { R.connectPort = R.UnixSocket s }
+  let connectSocket = maybe (Right R.defaultConnectInfo) f redisConnectionSocket
+
   redisConnectionString <- lookupEnv "REDIS"
-  let connectInfo = maybe (Right R.defaultConnectInfo) R.parseConnectInfo redisConnectionString
+  let connectInfo = maybe connectSocket R.parseConnectInfo redisConnectionString
+  
   conn <- either error R.checkedConnect connectInfo
 
   let context = AppCtx { getJWK = jwkRsa, getSymmetricJWK = symmetricJwk, getConfiguration = config, getConnection = conn }

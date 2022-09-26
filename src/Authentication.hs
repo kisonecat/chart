@@ -34,8 +34,8 @@ import Crypto.JOSE
 import           Control.Monad.Except        (liftEither, throwError, runExceptT)
 import           Control.Monad.IO.Class      (liftIO)
 
-data AuthenticatedUser = AuthenticatedUser { name :: !Text
-                                           , chart :: !Text
+data AuthenticatedUser = AuthenticatedUser { username :: !Text
+                                           , domain :: !Text
                                            }
                        deriving (Show, Generic)
 
@@ -43,7 +43,6 @@ instance FromJSON AuthenticatedUser
 instance ToJSON AuthenticatedUser 
 instance ToJWT AuthenticatedUser
 instance FromJWT AuthenticatedUser
-
 
 data JSONWebToken  
   
@@ -58,13 +57,13 @@ type instance BasicAuthCfg = BasicAuthData -> IO (AuthResult AuthenticatedUser)
 instance FromBasicAuthData AuthenticatedUser where
   fromBasicAuthData authData authCheckFunction = authCheckFunction authData
 
-type API = SAS.Auth '[SA.BasicAuth] AuthenticatedUser :> ( "token" :> Get '[JSONWebToken] SignedJWT  :<|> "authorize" :> Get '[JSON] () )
+type API = SAS.Auth '[SA.BasicAuth] AuthenticatedUser :> "users" :> Capture "user" String :> ( "token" :> Get '[JSONWebToken] SignedJWT  :<|> "authorize" :> Get '[JSON] () )
 
 authCheck :: Configuration -> R.Connection
           -> BasicAuthData
           -> IO (AuthResult AuthenticatedUser)
 authCheck config _connection (BasicAuthData login _password) = pure $
-  maybe SAS.Indefinite Authenticated $ Just $ AuthenticatedUser { name = cs login, chart = cs $ getHostname config }
+  maybe SAS.Indefinite Authenticated $ Just $ AuthenticatedUser { username = cs login, domain = cs $ getHostname config }
 
 bestAlg :: AuthenticatedUser -> SAS.JWTSettings -> IO (Either Crypto.JOSE.Error Crypto.JWT.SignedJWT)
 bestAlg u jwt  = runExceptT $ do
@@ -73,8 +72,8 @@ bestAlg u jwt  = runExceptT $ do
   let claims = encodeJWT u
   signClaims jwk (newJWSHeader ((), alg)) claims
 
-userToken :: SAS.JWTSettings -> AuthResult AuthenticatedUser -> AppM SignedJWT 
-userToken jwt (SAS.Authenticated u) = do
+userToken :: SAS.JWTSettings -> AuthResult AuthenticatedUser -> String -> AppM SignedJWT 
+userToken jwt (SAS.Authenticated u) _user = do
   --let jwk = signingKey jwt
   --alg <- liftIO $ bestAlg jwt 
   --let claims = encodeJWT u
@@ -85,12 +84,12 @@ userToken jwt (SAS.Authenticated u) = do
      -- Right j -> pure $ Book $ cs $ encodeCompact j
      Right j -> pure j
   
-userToken _ _ = throwError err401
+userToken _ _ _ = throwError err401
   
-userAuthorize :: AuthResult AuthenticatedUser -> AppM () 
-userAuthorize (SAS.Authenticated _adminAuthenticatedUser) = pure () 
-userAuthorize _ = throwError err401
+userAuthorize :: AuthResult AuthenticatedUser -> String -> AppM () 
+userAuthorize (SAS.Authenticated _adminAuthenticatedUser) _user = pure () 
+userAuthorize _ _ = throwError err401
 
 server :: SAS.CookieSettings -> SAS.JWTSettings -> ServerT API AppM
-server _cookies jwt u = userToken jwt u :<|> userAuthorize u
+server _cookies jwt u v = userToken jwt u v :<|> userAuthorize u v 
 
