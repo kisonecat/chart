@@ -66,7 +66,7 @@ getUser (Authenticated au) u = pure $ User { firstName = ""
                                            , domain = ""
                                            }
                              
-getUser _ _ = throwError err401
+getUser _ _ = throwError err401 { errBody = "" }
 
 putUser :: AuthResult AuthenticatedUser -> String -> User -> AppM User
 putUser _ _ _ = throwError err401

@@ -2,7 +2,7 @@
 
 "Progress" is a pairing between worksheets and learners.
 
-A charrt is promising to store progress for all its users, and lists
+A chart is promising to store progress for all its users, and lists
 of worksheets for its courses.
 
 # What is a worksheet?
@@ -155,7 +155,7 @@ Get (an unspecified number of) recent events for the given learner.
 
 ## Courses
 
-### POST /courses
+### POST /courses/:course
 ### DELETE /courses/:course
 ### PUT /courses/:course
 ### PATCH /courses/:course
@@ -164,9 +164,7 @@ Get (an unspecified number of) recent events for the given learner.
 Create or delete a course; the current user becomes an "instructor"
 when creating a course.
 
-### GET /courses/:course/token
-
-Get a JWT scoped for the course's chart.
+This requires hashcash.
 
 ### GET /courses/:course/instructors
 
@@ -181,6 +179,13 @@ other instructors.
 
 Remove an instructor from a course.  The final instructor cannot be
 removed.
+
+### GET /courses/:course/token
+
+As an instructor homed elsewhere, get a JWT scoped for the course's
+chart.
+
+TODO: why is this necessary?
 
 ### GET /courses/:course/learners
 
@@ -201,6 +206,10 @@ Disenroll a student from the course.
 ### POST /courses/:course/learners/:user
 
 Enroll a student in a course; students can enroll themselves in a course.
+
+### GET /courses/:course/learners/:user
+
+Retrieve information about the user as a learner in the given course.
 
 ### GET /courses/:course/progress
 

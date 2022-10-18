@@ -62,16 +62,19 @@ import AppM ( AppCtx(..), AppM )
 import qualified LTI
 
 import qualified User
+import qualified Course
 import qualified Authentication
 
-type TheAPI = Authentication.API :<|> User.API
+type TheAPI = Authentication.API :<|> User.API :<|> Course.API
 
 api :: Proxy TheAPI
 api = Proxy
 
 server :: SAS.CookieSettings -> SAS.JWTSettings -> ServerT TheAPI AppM
 server _cookies jwt =
-  Authentication.server _cookies jwt :<|> User.server _cookies jwt 
+  Authentication.server _cookies jwt :<|>
+  User.server _cookies jwt :<|>
+  Course.server _cookies jwt
 
 runRedis :: R.Redis a -> AppM a
 runRedis redis = do
