@@ -55,6 +55,9 @@ import qualified Data.ByteString.Char8 as C8
 import Network.Wai (Middleware, remoteHost)
 import Network.Wai.Logger (withStdoutLogger)
 
+import Data.Pool (createPool, Pool, withResource)
+import Control.Monad (void)
+
 import JsonWorkProof
 import Authentication (AuthenticatedUser, authCheck)
 import AppM ( AppCtx(..), AppM )
@@ -76,10 +79,10 @@ server _cookies jwt =
   User.server _cookies jwt :<|>
   Course.server _cookies jwt
 
-runRedis :: R.Redis a -> AppM a
-runRedis redis = do
-   conn <- asks getConnection
-   liftIO $ R.runRedis conn redis
+--runRedis :: R.Redis a -> AppM a
+--runRedis redis = do
+--   conn <- asks getConnection
+--   liftIO $ R.runRedis conn redis
 
 --  (userToken jwt u) :<|> (userAuthorize u)
  
@@ -98,15 +101,16 @@ runRedis redis = do
 nt :: AppCtx -> AppM a -> Handler a
 nt s x = runReaderT x s
 
-
 app :: AppCtx -> IO Application
 app ctx = do
   let myKey = getJWK ctx 
       jwtCfg = defaultJWTSettings myKey
-      authCfg = authCheck (getConfiguration ctx) (getConnection ctx)
-      cookies = defaultCookieSettings 
-      cfg = jwtCfg :. cookies :. authCfg :. EmptyContext
-  pure $ serveWithContext api cfg $ hoistServerWithContext api (Proxy :: Proxy '[BasicAuthData -> IO (AuthResult AuthenticatedUser), SAS.CookieSettings, SAS.JWTSettings]) (nt ctx) (server cookies jwtCfg)
+      pool = getPool ctx
+  withResource pool $ \conn -> do
+    let authCfg = authCheck (getConfiguration ctx) conn 
+    let cookies = defaultCookieSettings 
+    let cfg = conn :. jwtCfg :. cookies :. authCfg :. EmptyContext
+    pure $ serveWithContext api cfg $ hoistServerWithContext api (Proxy :: Proxy '[R.Connection, BasicAuthData -> IO (AuthResult AuthenticatedUser), SAS.CookieSettings, SAS.JWTSettings]) (nt ctx) (server cookies jwtCfg)
 
 --middleware :: R.Connection -> Middleware
 --middleware conn = rateLimiting strategy
@@ -117,12 +121,12 @@ app ctx = do
 middleware :: R.Connection -> Middleware
 middleware _ = id
 
-main2 :: IO ()
-main2 = do
-  let jwp = decodeJWP "eyJ0eXAiOiAiSldQIiwgImFsZyI6ICJTSEEyNTYiLCAiZGlmIjogMTB9.eyJoZWxsbyI6ICJ3b3JsZCIsICJjb3VudCI6IDg4LCAiZXhwIjogMTY1Mzc3ODMzNC4wNDY0Mzl9.y1Iw4WeHBIuUT_ncwpdqDQBW4"
+-- main2 :: IO ()
+-- main2 = do
+--   let jwp = decodeJWP "eyJ0eXAiOiAiSldQIiwgImFsZyI6ICJTSEEyNTYiLCAiZGlmIjogMTB9.eyJoZWxsbyI6ICJ3b3JsZCIsICJjb3VudCI6IDg4LCAiZXhwIjogMTY1Mzc3ODMzNC4wNDY0Mzl9.y1Iw4WeHBIuUT_ncwpdqDQBW4"
 
-  r <- either error JsonWorkProof.verify jwp 
-  putStrLn $ show $ r
+--   r <- either error JsonWorkProof.verify jwp 
+--   putStrLn $ show $ r
 
 main :: IO ()
 main = do
@@ -154,10 +158,20 @@ main = do
 
   redisConnectionString <- lookupEnv "REDIS"
   let connectInfo = maybe connectSocket R.parseConnectInfo redisConnectionString
+
+  let connectInfo' = case connectInfo of
+                       Left e -> error e
+                       Right c -> c
+
+  pool <- createPool (R.checkedConnect connectInfo') -- creating connection
+          (\conn -> void $ R.runRedis conn R.quit) -- clean-up action
+          1 -- number of sub-pools
+          60 -- how long in seconds to keep unused connections open
+          50 -- maximum number of connections
   
   conn <- either error R.checkedConnect connectInfo
 
-  let context = AppCtx { getJWK = jwkRsa, getSymmetricJWK = symmetricJwk, getConfiguration = config, getConnection = conn }
+  let context = AppCtx { getJWK = jwkRsa, getSymmetricJWK = symmetricJwk, getConfiguration = config, getPool = pool }
 
   withStdoutLogger $ \aplogger -> do
     let settingsWithLog = setLogger aplogger settings

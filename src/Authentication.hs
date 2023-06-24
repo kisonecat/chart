@@ -7,8 +7,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
-module Authentication ( API, server, AuthenticatedUser, authCheck ) where
-
+module Authentication ( API, server, AuthenticatedUser(username, domain), authCheck ) where
 
 import GHC.Generics ( Generic )
 import Data.Text ( Text )  
@@ -32,7 +31,7 @@ import Crypto.JWT (signClaims, SignedJWT)
 
 import qualified Text.Email.Validate as Email
 
-import AppM ( AppM, AppCtx, getConnection )
+import AppM ( AppM, AppCtx, getPool )
 
 import qualified Crypto.JOSE.JWK as JOSE
 import Crypto.JOSE
@@ -42,6 +41,7 @@ import           Control.Monad.IO.Class      (liftIO)
 
 import Crypto.BCrypt
 import Text.StringRandom (stringRandomIO)
+import Data.Pool (withResource)
 
 data AuthenticatedUser = AuthenticatedUser { username :: !Text
                                            , domain :: !Text
@@ -110,18 +110,18 @@ postUser SAS.Indefinite email =
   if not $ Email.isValid (cs email)
     then throwError err401 { errBody = "Invalid email" }
     else do
-      conn <- asks getConnection
-      
-      name <- liftIO $ stringRandomIO "[a-z]{16}"
-      password <- liftIO $ stringRandomIO "[a-z]{16}"
-      hashed <- liftIO $ hashPasswordUsingPolicy slowerBcryptHashingPolicy (cs password)
-      _ <- case hashed of
-        Nothing -> throwError err401 { errBody = "Could not calculate hash" }
-        Just hashed' ->
-          liftIO $ R.runRedis conn $ R.set (cs ("pw:" ++ cs name)) hashed'
+      pool <- asks getPool
+      withResource pool $ \conn -> do
+        name <- liftIO $ stringRandomIO "[a-z]{16}"
+        password <- liftIO $ stringRandomIO "[a-z]{16}"
+        hashed <- liftIO $ hashPasswordUsingPolicy slowerBcryptHashingPolicy (cs password)
+        _ <- case hashed of
+          Nothing -> throwError err401 { errBody = "Could not calculate hash" }
+          Just hashed' ->
+            liftIO $ R.runRedis conn $ R.set (cs ("pw:" ++ cs name)) hashed'
 
-      -- should email with the given address
-      liftIO $ putStrLn $ "username: " ++ cs name ++ " password: " ++ cs password
+        -- should email with the given address
+        liftIO $ putStrLn $ "username: " ++ cs name ++ " password: " ++ cs password
       
       pure ()
   
@@ -129,4 +129,3 @@ postUser _ _ = throwError err401
 
 server :: SAS.CookieSettings -> SAS.JWTSettings -> ServerT API AppM
 server _cookies jwt u v = postUser u v :<|> userToken jwt u v :<|> userAuthorize u v 
-

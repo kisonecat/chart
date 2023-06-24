@@ -18,6 +18,7 @@ import Crypto.JWT (signClaims, SignedJWT)
 import Crypto.JOSE.JWS (newJWSHeader)
 
 import Servant.Server
+import Data.Pool (Pool)
 
 import Configuration
     ( Configuration(getHostname) )
@@ -25,7 +26,7 @@ import Configuration
 import Network.Wai.Handler.Warp
 
 data AppCtx = AppCtx { getConfiguration :: Configuration
-                     , getConnection :: R.Connection
+                     , getPool :: Pool R.Connection
                      , getJWK :: JWK
                      , getSymmetricJWK :: JWK
                      }

@@ -28,7 +28,7 @@ A JWT identifies a user, and a scope for their possible actions.
 
 Courses are owned by a user.
 
-A single person might be represented by multiple users on doenet.
+A single person might be represented by multiple identities on doenet.
 
 # How is decentralized identity handled? 
 
@@ -38,14 +38,12 @@ server.
 For example, an instructor must prove their identity to a user's
 chart; this then means that the instructor is entitled to the
 learner's data.  This is done by providing a JWT using a public key.
-The public key can be verified with the other vertex, ultimately
+The public key can be verified with the other chart, ultimately
 protected via TLS.
 
 # What is a course?
 
-A course is a URI of the form `https://chart/courses/name` where name
-can be chosen freely (and may include slashes) and `chart` is the
-Doenet chart.
+Like a user, a course is also identified as `name@chart`.
 
 A course includes worksheets.
 
@@ -109,6 +107,10 @@ Log in as the given user.  Password is sent in the `Authorization:
 Basic` header.  Responds by returning a token in the body containing a
 JWT.
 
+### GET /users/:user/charts/:chart/token
+
+As a user on this chart, get a JWT scoped for the given chart.
+
 ### GET /users/:user/authorize
 
 Log in as the given user.  Password is sent in the `Authorization:
@@ -118,23 +120,30 @@ Basic` header.  Responds by setting a cookie containing a JWT.
 
 ### POST /worksheets/:worksheet/token
 
-Redirect to the given worksheet, passing the worksheet a JWT token in
-the query string (or hash?) narrowly scoped to the worksheet's domain
-to permit progress and dd state updates.
+Redirect to the given worksheet, passing the worksheet a symmetric JWT
+token in the query string (or hash?) narrowly scoped to the
+worksheet's domain to permit progress and do state updates.
 
 The worksheet URL is stored in a POST variable.
 
 ### PUT /learners/:user/worksheets/:worksheet/progress
-### GET /learners/:user/worksheets/:worksheet/progress
 
-Retrieve or record progress on this worksheet.
+Record progress on this worksheet.
 
 Hashcash required.
 
-### GET /learners/:user/worksheets/:worksheet/state
-### PATCH /learners/:user/worksheets/:worksheet/state
+### GET /learners/:user/worksheets/:worksheet/progress
 
-Retrieve or record page state on this worksheet.
+Retrieve progress on this worksheet.
+
+### GET /learners/:user/worksheets/:worksheet/state
+
+Retrieve page state on this worksheet.
+
+### PATCH /learners/:user/worksheets/:worksheet/state
+### PUT /learners/:user/worksheets/:worksheet/state
+
+Record or update page state on this worksheet.
 
 Hashcash required.
 
@@ -180,12 +189,6 @@ other instructors.
 Remove an instructor from a course.  The final instructor cannot be
 removed.
 
-### GET /courses/:course/token
-
-As an instructor homed elsewhere, get a JWT scoped for the course's
-chart.
-
-TODO: why is this necessary?
 
 ### GET /courses/:course/learners
 
@@ -236,3 +239,6 @@ add or update or delete a worksheet to a course
 
 assignments have deadlines (and exceptions)
 
+# hub.doenet.cloud
+
+static site

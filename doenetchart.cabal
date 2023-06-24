@@ -28,6 +28,7 @@ executable doenetchart
 
   other-modules:       Configuration
                      , JsonWorkProof
+                     , Hashcash
                      , Authentication
                      , User
                      , Course
@@ -39,8 +40,9 @@ executable doenetchart
 
   -- Other library packages from which modules are imported.
   build-depends:       base
-                     , aeson ==1.5.6.0
+                     , aeson >= 2 
                      , bytestring
+                     , word8
                      , bcrypt
                      , email-validate
                      , string-random
@@ -54,6 +56,7 @@ executable doenetchart
                      , servant-auth
                      , servant-server
                      , servant-auth-server
+                     , resource-pool
                      , jose
                      , http-media
                      , x509-store
@@ -71,7 +74,7 @@ executable doenetchart
                      , warp
                      , base64-bytestring
                      , cryptonite
-                     , lti13
+                     , lti13 >= 0.3.0.0
                      , memory
                      , time
 

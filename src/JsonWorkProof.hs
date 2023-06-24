@@ -89,9 +89,20 @@ verifyExpiration jwp = do
   let seconds = round duration :: Integer
   pure $ (seconds < 0) && (seconds > (-30 * 60))
 
-verify :: JWP -> IO Bool
-verify jwp = do
-  expiration <- verifyExpiration jwp
+verify :: JWP -> Int -> Text -> IO (Either String ())
+verify jwp d s = do
+  unexpired <- verifyExpiration jwp
   let actualDifficulty = difficulty $ token jwp
   let claimedDifficulty = getDifficulty $ header jwp
-  pure $ (actualDifficulty >= claimedDifficulty) && expiration
+  let maybeSubject = getSubject $ payload jwp
+
+  if Just s /= maybeSubject then
+    pure $ Left "Subject mismatch"
+  else if claimedDifficulty > d then
+    pure $ Left "Claimed difficulty is too high"
+  else if actualDifficulty < claimedDifficulty then
+    pure $ Left "Actual difficulty is too low"
+  else if not unexpired then
+    pure $ Left "Token expired"
+  else
+    pure $ Right ()
