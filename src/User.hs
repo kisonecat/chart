@@ -7,7 +7,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module User (API, server) where
+module User (API, server, UserIdentifier(..)) where
 
 import Servant
 import Servant.Auth as SA
@@ -36,83 +36,125 @@ import           Control.Monad.Except        (liftEither, throwError, runExceptT
 import           Control.Monad.IO.Class      (liftIO)
 
 import Data.List (break)
+import qualified Text.Email.Validate as Email
+import Data.Aeson.Types (Parser)
+  
+data UserIdentifier = UserIdentifier { username :: !Text
+                                     , domain :: !(Maybe Text)
+                                     }
+                        deriving Show
 
-data User = User { firstName :: !(Maybe Text)
-                 , lastName :: !(Maybe Text)
+parseUserIdentifier :: Text -> Either Text UserIdentifier
+parseUserIdentifier text = case Email.emailAddress (cs text) of
+      Just address -> Right $ UserIdentifier
+                            (cs $ Email.localPart address)
+                            (Just $ cs $ Email.domainPart address)
+      Nothing -> Right $ UserIdentifier text Nothing
+
+instance FromHttpApiData UserIdentifier where
+  parseUrlPiece = parseUserIdentifier 
+  
+instance FromJSON UserIdentifier where
+  parseJSON = withText "UserIdentifier" parse
+    where
+      parse :: Text -> Parser UserIdentifier
+      parse uid = case parseUserIdentifier uid of
+        Left e -> fail $ cs e
+        Right u -> pure u
+  
+instance ToHttpApiData UserIdentifier where
+  toUrlPiece (UserIdentifier name (Just domain)) =
+    Text.concat [ name, "@", domain ]
+  toUrlPiece (UserIdentifier name Nothing) = name
+
+instance ToJSON UserIdentifier where
+    toJSON (UserIdentifier name (Just domain)) = String $ Text.concat [ name, "@", domain ]
+    toJSON (UserIdentifier name Nothing) = String name
+
+data User = User { identifier :: !UserIdentifier
                  , email :: !(Maybe Text)
-                 , username :: !Text
-                 , domain :: !(Maybe Text)
+                 , firstName :: !(Maybe Text)
+                 , lastName :: !(Maybe Text)
                  }
           deriving Show
 
 userDefault :: User
-userDefault = User { firstName = Nothing, lastName = Nothing, email = Nothing, username = "", domain = Nothing }
-
-parseUser :: String -> User
-parseUser s =
-  let (username, domain) = break (== '@') s
-  in if null domain
-     then userDefault { username = Text.pack username, domain = Nothing }
-     else userDefault { username = Text.pack username, domain = Just $ Text.pack $ tail domain }
+userDefault = User { firstName = Nothing, lastName = Nothing, email = Nothing, identifier = UserIdentifier "" Nothing }
 
 instance FromJSON User where
-    parseJSON (Object v) = f <$> (v .: "id")
-                           <*> v .:? "firstName"
-                           <*> v .:? "lastName"
-                           <*> v .:? "email"
-                           where f s fn ln e = (parseUser s) { firstName = fn, lastName = ln, email = e }
-    parseJSON _ = pure $ userDefault
+  parseJSON = withObject "User" $ \v -> do
+    firstName <- v .:? "firstName"
+    lastName <- v .:? "lastName"
+    email <- v .:? "email"
+    identifier <- v .: "id"
+    return $ User { identifier = identifier, firstName = firstName, lastName = lastName, email = email }
 
 instance ToJSON User where
-    toJSON (User firstName lastName email username domain) =
-      object [ "firstName" .= firstName
-             , "lastName" .= lastName
+    toJSON (User identifier email firstName lastName) =
+      object [ "id" .= identifier
              , "email" .= email
-             , "id" .= maybe username (\d -> Text.concat [username, "@", d]) domain
+             , "firstName" .= firstName
+             , "lastName" .= lastName
              ]
 
-type GetAPI = Get '[JSON] User 
-
-resolveDomain :: User -> AppM User
-resolveDomain u
-  | isNothing (domain u) = do
+refineUserIdentifier :: UserIdentifier -> AppM UserIdentifier
+refineUserIdentifier uid@(UserIdentifier _ (Just d)) = pure uid
+refineUserIdentifier uid@(UserIdentifier _ Nothing) = do
       config <- asks getConfiguration
-      pure $ u { domain = Just $ Text.pack $ getHostname config }
-  | otherwise = pure u
+      pure $ uid { domain = Just $ Text.pack $ getHostname config }
 
-lookupUser :: Text -> AppM User
-lookupUser uid = do
+refineUser :: User -> AppM User
+refineUser u = do
+  i <- refineUserIdentifier (identifier u)
+  pure $ u { identifier = i }
+
+thisDomain :: AppM Text
+thisDomain = do
+  config <- asks getConfiguration
+  pure $ Text.pack $ getHostname config
+      
+lookupUser :: UserIdentifier -> AppM User
+lookupUser (UserIdentifier name Nothing) = do
   pool <- asks getPool
   withResource pool $ \conn -> do
-    maybeUser <- liftIO $ R.runRedis conn $ R.get $ pack $ "user:" ++ cs uid
+    maybeUser <- liftIO $ R.runRedis conn $ R.get $ pack $ "user:" ++ cs name
     case maybeUser of
       Left _ -> throwError err500
       Right Nothing -> throwError err404
       Right (Just j) -> case eitherDecodeStrict j of
                           Left _ -> throwError err500
                           Right user -> pure user
+lookupUser (UserIdentifier name (Just d)) = do
+  d' <- thisDomain
+  if d' == d
+    then lookupUser (UserIdentifier name Nothing)
+    else throwError err404
 
-getUser :: AuthResult AuthenticatedUser -> String -> AppM User 
-getUser (Authenticated au) u =
-  do
-    resolvedUser <- resolveDomain $ parseUser u
-    if (A.username au == username resolvedUser) && (Just (A.domain au) == domain resolvedUser)
-      then lookupUser $ username resolvedUser 
-      else throwError err403
-getUser _ _ = throwError err401 { errBody = "" }
+type GetAPI = Get '[JSON] User 
 
-putUser :: AuthResult AuthenticatedUser -> String -> User -> AppM User
+getUser :: AuthResult AuthenticatedUser -> UserIdentifier -> AppM User 
+getUser (Authenticated au) uid@(UserIdentifier name Nothing) =
+  if A.username au == name 
+    then lookupUser uid
+    else throwError err403
+getUser (Authenticated au) uid@(UserIdentifier name (Just d)) = do 
+  if A.domain au == d
+    then lookupUser uid
+    else throwError err403  
+
+putUser :: AuthResult AuthenticatedUser -> UserIdentifier -> User -> AppM User
 putUser _ _ _ = throwError err401
 
-patchUser :: AuthResult AuthenticatedUser -> String -> User -> AppM User
+patchUser :: AuthResult AuthenticatedUser -> UserIdentifier -> User -> AppM User
 patchUser _ _ _ = throwError err401
 
 type UpdateAPI = ReqBody '[JSON] User :> (Put '[JSON] User :<|> Patch '[JSON] User)
 
-updateUser :: AuthResult AuthenticatedUser -> String -> ServerT UpdateAPI AppM 
+updateUser :: AuthResult AuthenticatedUser -> UserIdentifier -> ServerT UpdateAPI AppM 
 updateUser au u uu = putUser au u uu :<|> patchUser au u uu
 
-type API = SAS.Auth '[SA.JWT] AuthenticatedUser :> "users" :> Capture "user" String :> ( GetAPI :<|> UpdateAPI )
+type API = SAS.Auth '[SA.JWT] AuthenticatedUser :> "users" :> Capture "user" UserIdentifier :>
+  ( GetAPI :<|> UpdateAPI )
 
 server :: SAS.CookieSettings -> SAS.JWTSettings -> ServerT API AppM
 server _ _ au u = getUser au u :<|> updateUser au u
