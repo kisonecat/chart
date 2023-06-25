@@ -10,8 +10,10 @@
 module Authentication ( API, server, AuthenticatedUser(username, domain), authCheck ) where
 
 import GHC.Generics ( Generic )
-import Data.Text ( Text )  
+import Data.Text ( Text, unpack )  
 import Data.Aeson
+import Data.Text.Encoding (encodeUtf8)
+import Data.Maybe (listToMaybe)
 
 import Servant
 import Servant.Auth as SA
@@ -27,7 +29,9 @@ import Network.HTTP.Media ((//), (/:))
 
 import Control.Monad.Trans.Reader  (ReaderT, ask, asks)
 
-import Crypto.JWT (signClaims, SignedJWT)
+import Crypto.JWT (signClaims, SignedJWT, ClaimsSet, emptyClaimsSet, Audience(..))
+import Crypto.JWT (claimAud, claimIss, claimSub)
+import Crypto.JWT (stringOrUri, string)
 
 import qualified Text.Email.Validate as Email
 
@@ -38,20 +42,51 @@ import Crypto.JOSE
 
 import           Control.Monad.Except        (liftEither, throwError, runExceptT)
 import           Control.Monad.IO.Class      (liftIO)
+import Control.Monad (when)
 
 import Crypto.BCrypt
 import Text.StringRandom (stringRandomIO)
 import Data.Pool (withResource)
+import Control.Lens
 
 data AuthenticatedUser = AuthenticatedUser { username :: !Text
                                            , domain :: !Text
+                                           , subject :: !(Maybe Text)
+                                           , audience :: !(Maybe Text)
                                            }
                        deriving (Show, Generic)
 
 instance FromJSON AuthenticatedUser
-instance ToJSON AuthenticatedUser 
-instance ToJWT AuthenticatedUser
-instance FromJWT AuthenticatedUser
+instance ToJSON AuthenticatedUser
+
+instance FromJWT AuthenticatedUser where
+    decodeJWT claims = do
+      let iss = preview string =<< view claimIss claims
+      let sub = preview string =<< view claimSub claims
+      let auds = preview string =<< (\(Audience xs) -> listToMaybe xs) =<< view claimAud claims
+      let (u, d) = maybe ("","") splitUsernameAndDomain iss
+      when (u == "" || d == "") $
+        Left "Invalid username or domain"
+      pure $ AuthenticatedUser { username = u
+                               , domain = d
+                               , subject = sub
+                               , audience = auds
+                               }
+      where
+        splitUsernameAndDomain :: Text -> (Text, Text)
+        splitUsernameAndDomain s =
+          let (u, d) = break (== '@') (cs s)
+          in (cs u, cs d)
+              
+instance ToJWT AuthenticatedUser where
+    encodeJWT user =
+      let issuer = preview stringOrUri (username user <> "@" <> domain user)
+          sub = preview stringOrUri =<< subject user
+          aud = preview stringOrUri =<< audience user
+      in
+        emptyClaimsSet & claimIss .~ issuer
+                       & claimSub .~ sub
+                       & claimAud .~ fmap (\a -> Audience [a]) aud
 
 data JSONWebToken  
   
@@ -77,7 +112,11 @@ authCheck config conn (BasicAuthData login password) = do
     Left _ -> SAS.Indefinite
     Right Nothing -> SAS.NoSuchUser
     Right (Just hashed) -> if validatePassword hashed password
-      then Authenticated AuthenticatedUser { username = cs login, domain = cs $ getHostname config }
+      then Authenticated AuthenticatedUser { username = cs login
+                                           , domain = cs $ getHostname config
+                                           , subject = Nothing
+                                           , audience = Nothing
+                                           }
       else SAS.BadPassword
 
 bestAlg :: AuthenticatedUser -> SAS.JWTSettings -> IO (Either Crypto.JOSE.Error Crypto.JWT.SignedJWT)

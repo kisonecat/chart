@@ -53,7 +53,7 @@ staff.
 # How does hashcash work?
 
 Various endpoints require a payment of hashcash, which is provided as
-an `X-Hashcash` header.  The hashcash is formatted as a JSON Work
+an `JSON-Work-Proof` header.  The hashcash is formatted as a JSON Work
 Proof.
 
 # What about people who aren't logged in?
