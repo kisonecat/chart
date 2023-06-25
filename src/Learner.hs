@@ -39,7 +39,7 @@ import Control.Monad.Trans.Reader  (ReaderT, ask, asks)
 import           Control.Monad.Except        (liftEither, throwError, runExceptT)
 import           Control.Monad.IO.Class      (liftIO)
   
-import Crypto.Hash (Digest, SHA256, hashWith, digestFromByteString)
+import Crypto.Hash (Digest, SHA256(SHA256), hashWith, digestFromByteString)
 
 import Data.ByteArray (ByteArrayAccess, convert)
 import Data.ByteArray.Encoding (convertFromBase, convertToBase, Base(Base16))
@@ -85,8 +85,19 @@ worksheetServer _ _ au hash worksheet = redirectToWorksheet au hash worksheet
 
 type ProgressAPI = "progress" :> ((ReqBody '[JSON] Double :> Put '[JSON] NoContent) :<|> Get '[JSON] Double)
 
+uriToDigest :: URI -> Digest SHA256
+uriToDigest uri = hashWith SHA256 $ pack $ uriToString id uri ""
+
+ensureDigestMatches :: Digest SHA256 -> URI -> AppM NoContent
+ensureDigestMatches digest uri = 
+  if uriToDigest uri == digest
+  then pure NoContent
+  else throwError err400 { errBody = "Digest does not match the provided URI" }
+
 getProgress :: AuthResult AuthenticatedUser -> UserIdentifier -> Digest SHA256 -> URI -> AppM Double
-getProgress = undefined
+getProgress au uid digest uri = do
+  ensureDigestMatches digest uri
+  pure 17.0
   
 putProgress :: AuthResult AuthenticatedUser -> UserIdentifier -> Digest SHA256 -> URI -> Double -> AppM NoContent
 putProgress = undefined

@@ -141,7 +141,9 @@ getUser (Authenticated au) uid@(UserIdentifier name (Just d)) = do
   if A.domain au == d
     then lookupUser uid
     else throwError err403  
+getUser _ _ = throwError err401
 
+  
 putUser :: AuthResult AuthenticatedUser -> UserIdentifier -> User -> AppM User
 putUser _ _ _ = throwError err401
 
