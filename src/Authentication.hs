@@ -7,7 +7,8 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
-module Authentication ( API, server, AuthenticatedUser(username, domain), authCheck ) where
+module Authentication ( API, server,
+                        AuthenticatedUser(username, domain, subject, audience), authCheck ) where
 
 import GHC.Generics ( Generic )
 import Data.Text ( Text, unpack )  
@@ -31,7 +32,7 @@ import Control.Monad.Trans.Reader  (ReaderT, ask, asks)
 
 import Crypto.JWT (signClaims, SignedJWT, ClaimsSet, emptyClaimsSet, Audience(..))
 import Crypto.JWT (claimAud, claimIss, claimSub)
-import Crypto.JWT (stringOrUri, string)
+import Crypto.JWT (stringOrUri, string, uri)
 
 import qualified Text.Email.Validate as Email
 
@@ -49,6 +50,9 @@ import Text.StringRandom (stringRandomIO)
 import Data.Pool (withResource)
 import Control.Lens
 
+import Network.URI
+import qualified Text.Email.Validate as Email
+
 data AuthenticatedUser = AuthenticatedUser { username :: !Text
                                            , domain :: !Text
                                            , subject :: !(Maybe Text)
@@ -58,25 +62,20 @@ data AuthenticatedUser = AuthenticatedUser { username :: !Text
 
 instance FromJSON AuthenticatedUser
 instance ToJSON AuthenticatedUser
-
+  
 instance FromJWT AuthenticatedUser where
     decodeJWT claims = do
       let iss = preview string =<< view claimIss claims
       let sub = preview string =<< view claimSub claims
       let auds = preview string =<< (\(Audience xs) -> listToMaybe xs) =<< view claimAud claims
-      let (u, d) = maybe ("","") splitUsernameAndDomain iss
-      when (u == "" || d == "") $
-        Left "Invalid username or domain"
+      (u,d) <- case Email.emailAddress . cs =<< iss of
+        Just address -> Right (cs $ Email.localPart address, cs $ Email.domainPart address)
+        Nothing -> Left "Invalid issuer"
       pure $ AuthenticatedUser { username = u
                                , domain = d
                                , subject = sub
                                , audience = auds
                                }
-      where
-        splitUsernameAndDomain :: Text -> (Text, Text)
-        splitUsernameAndDomain s =
-          let (u, d) = break (== '@') (cs s)
-          in (cs u, cs d)
               
 instance ToJWT AuthenticatedUser where
     encodeJWT user =

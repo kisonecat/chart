@@ -7,7 +7,11 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module User (API, server, UserIdentifier(..)) where
+module User (API
+            , server
+            , UserIdentifier(..)
+            , ensureIssuerMatchesUserIdentifier
+            ) where
 
 import Servant
 import Servant.Auth as SA
@@ -112,7 +116,18 @@ thisDomain :: AppM Text
 thisDomain = do
   config <- asks getConfiguration
   pure $ Text.pack $ getHostname config
-      
+
+ensureIssuerMatchesUserIdentifier :: AuthResult AuthenticatedUser -> UserIdentifier -> AppM NoContent
+ensureIssuerMatchesUserIdentifier (Authenticated au) uid@(UserIdentifier name Nothing) =
+  if A.username au == name 
+    then pure NoContent
+    else throwError err403
+ensureIssuerMatchesUserIdentifier (Authenticated au) uid@(UserIdentifier name (Just d)) = do 
+  if A.domain au == d
+    then ensureIssuerMatchesUserIdentifier (Authenticated au) (UserIdentifier name Nothing)
+    else throwError err403
+ensureIssuerMatchesUserIdentifier _ _ = throwError err401
+
 lookupUser :: UserIdentifier -> AppM User
 lookupUser (UserIdentifier name Nothing) = do
   pool <- asks getPool
@@ -142,6 +157,7 @@ getUser (Authenticated au) uid@(UserIdentifier name (Just d)) = do
     then lookupUser uid
     else throwError err403  
 getUser _ _ = throwError err401
+
 
   
 putUser :: AuthResult AuthenticatedUser -> UserIdentifier -> User -> AppM User

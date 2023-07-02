@@ -103,8 +103,8 @@ server _cookies jwt =
 nt :: AppCtx -> AppM a -> Handler a
 nt s x = runReaderT x s
 
-app :: AppCtx -> IO Application
-app ctx = do
+appWithContext :: AppCtx -> IO Application
+appWithContext ctx = do
   let myKey = getJWK ctx 
       jwtCfg = defaultJWTSettings myKey
       pool = getPool ctx
@@ -177,5 +177,5 @@ main = do
 
   withStdoutLogger $ \aplogger -> do
     let settingsWithLog = setLogger aplogger settings
-    theApp <- app context
+    theApp <- appWithContext context
     runSettings settingsWithLog $ middleware conn theApp
