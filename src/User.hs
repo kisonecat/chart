@@ -6,6 +6,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module User (API
             , server
@@ -32,9 +33,10 @@ import qualified Data.ByteString as BS
 import Data.ByteString.Char8 (pack)
 import Data.String.Conversions (cs)
 import Data.Pool (withResource)
+import Control.Monad.Reader
+import Control.Monad.Except
 
-import AppM ( AppM, getConfiguration, getPool )
-import Control.Monad.Trans.Reader  (ReaderT, ask, asks)
+import AppM ( AppM, getConfiguration, getPool, MonadDB(..), HasConfiguration(..) )
 
 import           Control.Monad.Except        (liftEither, throwError, runExceptT)
 import           Control.Monad.IO.Class      (liftIO)
@@ -101,23 +103,23 @@ instance ToJSON User where
              , "lastName" .= lastName
              ]
 
-refineUserIdentifier :: UserIdentifier -> AppM UserIdentifier
+refineUserIdentifier :: (MonadReader r m, HasConfiguration r) => UserIdentifier -> m UserIdentifier
 refineUserIdentifier uid@(UserIdentifier _ (Just d)) = pure uid
 refineUserIdentifier uid@(UserIdentifier _ Nothing) = do
       config <- asks getConfiguration
       pure $ uid { domain = Just $ Text.pack $ getHostname config }
 
-refineUser :: User -> AppM User
+refineUser :: (MonadReader r m, HasConfiguration r) => User -> m User
 refineUser u = do
   i <- refineUserIdentifier (identifier u)
   pure $ u { identifier = i }
 
-thisDomain :: AppM Text
+thisDomain :: (MonadReader r m, HasConfiguration r) => m Text
 thisDomain = do
   config <- asks getConfiguration
   pure $ Text.pack $ getHostname config
 
-ensureIssuerMatchesUserIdentifier :: AuthResult AuthenticatedUser -> UserIdentifier -> AppM NoContent
+ensureIssuerMatchesUserIdentifier :: (MonadReader r m, HasConfiguration r, MonadError ServerError m) => AuthResult AuthenticatedUser -> UserIdentifier -> m NoContent
 ensureIssuerMatchesUserIdentifier (Authenticated au) uid@(UserIdentifier name Nothing) =
   if A.username au == name 
     then pure NoContent
@@ -128,10 +130,9 @@ ensureIssuerMatchesUserIdentifier (Authenticated au) uid@(UserIdentifier name (J
     else throwError err403
 ensureIssuerMatchesUserIdentifier _ _ = throwError err401
 
-lookupUser :: UserIdentifier -> AppM User
+lookupUser :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadError ServerError m) => UserIdentifier -> m User
 lookupUser (UserIdentifier name Nothing) = do
-  pool <- asks getPool
-  withResource pool $ \conn -> do
+  withConnection $ \conn -> do
     maybeUser <- liftIO $ R.runRedis conn $ R.get $ pack $ "user:" ++ cs name
     case maybeUser of
       Left _ -> throwError err500
@@ -147,7 +148,7 @@ lookupUser (UserIdentifier name (Just d)) = do
 
 type GetAPI = Get '[JSON] User 
 
-getUser :: AuthResult AuthenticatedUser -> UserIdentifier -> AppM User 
+getUser :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadError ServerError m) => AuthResult AuthenticatedUser -> UserIdentifier -> m User 
 getUser (Authenticated au) uid@(UserIdentifier name Nothing) =
   if A.username au == name 
     then lookupUser uid
@@ -160,19 +161,19 @@ getUser _ _ = throwError err401
 
 
   
-putUser :: AuthResult AuthenticatedUser -> UserIdentifier -> User -> AppM User
+putUser :: (MonadError ServerError m) => AuthResult AuthenticatedUser -> UserIdentifier -> User -> m User
 putUser _ _ _ = throwError err401
 
-patchUser :: AuthResult AuthenticatedUser -> UserIdentifier -> User -> AppM User
+patchUser ::  (MonadError ServerError m) => AuthResult AuthenticatedUser -> UserIdentifier -> User -> m User
 patchUser _ _ _ = throwError err401
 
 type UpdateAPI = ReqBody '[JSON] User :> (Put '[JSON] User :<|> Patch '[JSON] User)
 
-updateUser :: AuthResult AuthenticatedUser -> UserIdentifier -> ServerT UpdateAPI AppM 
+updateUser :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadError ServerError m) => AuthResult AuthenticatedUser -> UserIdentifier -> ServerT UpdateAPI m
 updateUser au u uu = putUser au u uu :<|> patchUser au u uu
 
 type API = SAS.Auth '[SA.JWT] AuthenticatedUser :> "users" :> Capture "user" UserIdentifier :>
   ( GetAPI :<|> UpdateAPI )
 
-server :: SAS.CookieSettings -> SAS.JWTSettings -> ServerT API AppM
+server :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadError ServerError m) => SAS.CookieSettings -> SAS.JWTSettings -> ServerT API m
 server _ _ au u = getUser au u :<|> updateUser au u

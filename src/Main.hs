@@ -5,6 +5,7 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Main where
 
@@ -60,7 +61,11 @@ import Control.Monad (void)
 
 import JsonWorkProof
 import Authentication (AuthenticatedUser, authCheck)
-import AppM ( AppCtx(..), AppM )
+import AppM ( AppCtx(..), AppM(..), MonadDB(..), HasConfiguration(..), HasSymmetricJWK(..) )
+
+import           Control.Monad.IO.Class
+import Control.Monad.Reader
+import Control.Monad.Except
 
 import qualified LTI
 
@@ -74,7 +79,7 @@ type TheAPI = Authentication.API :<|> User.API :<|> Course.API :<|> Learner.API
 api :: Proxy TheAPI
 api = Proxy
 
-server :: SAS.CookieSettings -> SAS.JWTSettings -> ServerT TheAPI AppM
+server :: (MonadRandom m, MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, HasSymmetricJWK r, MonadError ServerError m) => SAS.CookieSettings -> SAS.JWTSettings -> ServerT TheAPI m
 server _cookies jwt =
   Authentication.server _cookies jwt :<|>
   User.server _cookies jwt :<|>
@@ -101,7 +106,7 @@ server _cookies jwt =
   
 -- natural transformation from the AppM monad to the Handler
 nt :: AppCtx -> AppM a -> Handler a
-nt s x = runReaderT x s
+nt s x = runReaderT (runApp x) s
 
 appWithContext :: AppCtx -> IO Application
 appWithContext ctx = do
@@ -109,7 +114,7 @@ appWithContext ctx = do
       jwtCfg = defaultJWTSettings myKey
       pool = getPool ctx
   withResource pool $ \conn -> do
-    let authCfg = authCheck (getConfiguration ctx) conn 
+    let authCfg = authCheck (_getConfiguration ctx) conn 
     let cookies = defaultCookieSettings 
     let cfg = conn :. jwtCfg :. cookies :. authCfg :. EmptyContext
     pure $ serveWithContext api cfg $ hoistServerWithContext api (Proxy :: Proxy '[R.Connection, BasicAuthData -> IO (AuthResult AuthenticatedUser), SAS.CookieSettings, SAS.JWTSettings]) (nt ctx) (server cookies jwtCfg)
@@ -126,7 +131,6 @@ middleware _ = id
 -- main2 :: IO ()
 -- main2 = do
 --   let jwp = decodeJWP "eyJ0eXAiOiAiSldQIiwgImFsZyI6ICJTSEEyNTYiLCAiZGlmIjogMTB9.eyJoZWxsbyI6ICJ3b3JsZCIsICJjb3VudCI6IDg4LCAiZXhwIjogMTY1Mzc3ODMzNC4wNDY0Mzl9.y1Iw4WeHBIuUT_ncwpdqDQBW4"
-
 --   r <- either error JsonWorkProof.verify jwp 
 --   putStrLn $ show $ r
 
@@ -173,7 +177,7 @@ main = do
   
   conn <- either error R.checkedConnect connectInfo
 
-  let context = AppCtx { getJWK = jwkRsa, getSymmetricJWK = symmetricJwk, getConfiguration = config, getPool = pool }
+  let context = AppCtx { getJWK = jwkRsa, _getSymmetricJWK = symmetricJwk, _getConfiguration = config, getPool = pool }
 
   withStdoutLogger $ \aplogger -> do
     let settingsWithLog = setLogger aplogger settings

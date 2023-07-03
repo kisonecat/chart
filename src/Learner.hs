@@ -7,6 +7,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE InstanceSigs #-} 
+{-# LANGUAGE FlexibleContexts #-} 
 
 module Learner (API, server) where
 
@@ -38,12 +39,14 @@ import Crypto.JWT (signClaims, SignedJWT, ClaimsSet, emptyClaimsSet, Audience(..
 import qualified Crypto.JOSE.JWK as JOSE
 import Crypto.JOSE
 
-import AppM ( AppM, getConfiguration, getPool, getSymmetricJWK )
-import Control.Monad.Trans.Reader  (ReaderT, ask, asks)
+import AppM ( AppM, MonadDB(..), HasConfiguration(..), HasSymmetricJWK(..) )
 
 import           Control.Monad.Except        (liftEither, throwError, runExceptT)
 import           Control.Monad.IO.Class      (liftIO)
-  
+import Control.Monad.IO.Class (MonadIO)
+import Control.Monad.Reader
+import Control.Monad.Except
+
 import Crypto.Hash (Digest, SHA256(SHA256), hashWith, digestFromByteString)
 
 import Data.ByteArray (ByteArrayAccess, convert)
@@ -92,7 +95,7 @@ instance FromHttpApiData (Digest SHA256) where
 uriToDigest :: URI -> Digest SHA256
 uriToDigest uri = hashWith SHA256 $ pack $ uriToString id uri ""
 
-ensureDigestMatches :: Digest SHA256 -> URI -> AppM NoContent
+ensureDigestMatches :: (MonadIO m, MonadDB m, MonadError ServerError m) => Digest SHA256 -> URI -> m NoContent
 ensureDigestMatches digest uri = 
   if uriToDigest uri == digest
   then pure NoContent
@@ -113,7 +116,7 @@ bestAlg u jwt jwk = runExceptT $ do
   let claims = encodeJWT u
   signClaims jwk (newJWSHeader ((), alg)) claims
 
-redirectToWorksheet :: SAS.JWTSettings -> AuthResult AuthenticatedUser -> Digest SHA256 -> URI -> AppM NoContent
+redirectToWorksheet :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, HasSymmetricJWK r, MonadError ServerError m) => SAS.JWTSettings -> AuthResult AuthenticatedUser -> Digest SHA256 -> URI -> m NoContent
 redirectToWorksheet cfg (Authenticated au) digest uri = do
   key <- asks getSymmetricJWK
   let au' = au { subject = cs . uriRegName <$> uriAuthority uri }
@@ -128,17 +131,12 @@ redirectToWorksheet _ _ _ _ = throwError err401
 
 type WorksheetAPI = SAS.Auth '[SA.JWT] AuthenticatedUser :> "worksheets" :> Capture "worksheet" (Digest SHA256) :> "token" :> Header' '[Required, Strict] "Worksheet" URI :> Post '[JSON] NoContent 
   
-worksheetServer :: SAS.CookieSettings -> SAS.JWTSettings -> ServerT WorksheetAPI AppM
+worksheetServer :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, HasSymmetricJWK r, MonadError ServerError m) => SAS.CookieSettings -> SAS.JWTSettings -> ServerT WorksheetAPI m
 worksheetServer _ = redirectToWorksheet
 
 type ProgressAPI = "progress" :> ((ReqBody '[JSON] Double :> Put '[JSON] NoContent) :<|> Get '[JSON] Double)
 
-withConnection :: (R.Connection -> AppM a) -> AppM a
-withConnection f = do
-  pool <- asks getPool
-  withResource pool f
-  
-getProgress :: AuthResult AuthenticatedUser -> UserIdentifier -> Digest SHA256 -> URI -> AppM Double
+getProgress :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadError ServerError m) => AuthResult AuthenticatedUser -> UserIdentifier -> Digest SHA256 -> URI -> m Double
 getProgress au uid@(UserIdentifier name _) digest uri = do
   ensureDigestMatches digest uri
   ensureIssuerMatchesUserIdentifier au uid
@@ -150,7 +148,7 @@ getProgress au uid@(UserIdentifier name _) digest uri = do
       Right Nothing -> pure 0.0
       Right (Just score) -> pure score
   
-putProgress :: AuthResult AuthenticatedUser -> UserIdentifier -> Digest SHA256 -> URI -> Double -> AppM NoContent
+putProgress :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadError ServerError m) => AuthResult AuthenticatedUser -> UserIdentifier -> Digest SHA256 -> URI -> Double -> m NoContent
 putProgress au uid@(UserIdentifier name _) digest uri score = do
   ensureDigestMatches digest uri
   ensureIssuerMatchesUserIdentifier au uid
@@ -161,14 +159,14 @@ putProgress au uid@(UserIdentifier name _) digest uri score = do
       Left err -> throwError err500 { errBody = cs $ show err } 
       Right _ -> pure NoContent
   
-progressServer :: AuthResult AuthenticatedUser -> UserIdentifier -> Digest SHA256 -> URI -> ServerT ProgressAPI AppM
+progressServer :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadError ServerError m) => AuthResult AuthenticatedUser -> UserIdentifier -> Digest SHA256 -> URI -> ServerT ProgressAPI m
 progressServer au learner hash worksheet  =
   putProgress au learner hash worksheet :<|>
   getProgress au learner hash worksheet
   
 type StateAPI = "state" :> ((ReqBody '[JSON] Value :> Put '[JSON] NoContent) :<|> Get '[JSON] Value)
 
-getState :: AuthResult AuthenticatedUser -> UserIdentifier -> Digest SHA256 -> URI -> AppM Value
+getState :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadError ServerError m) => AuthResult AuthenticatedUser -> UserIdentifier -> Digest SHA256 -> URI -> m Value
 getState au uid@(UserIdentifier name _) digest uri = do
   ensureDigestMatches digest uri
   ensureIssuerMatchesUserIdentifier au uid
@@ -182,7 +180,7 @@ getState au uid@(UserIdentifier name _) digest uri = do
         Nothing -> throwError err500
         Just v -> pure v
   
-putState :: AuthResult AuthenticatedUser -> UserIdentifier -> Digest SHA256 -> URI -> Value -> AppM NoContent
+putState :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadError ServerError m) => AuthResult AuthenticatedUser -> UserIdentifier -> Digest SHA256 -> URI -> Value -> m NoContent
 putState au uid@(UserIdentifier name _) digest uri value = do
   ensureDigestMatches digest uri
   ensureIssuerMatchesUserIdentifier au uid
@@ -194,20 +192,20 @@ putState au uid@(UserIdentifier name _) digest uri value = do
       Left err -> throwError err500 { errBody = cs $ show err } 
       Right _ -> pure NoContent
   
-stateServer :: AuthResult AuthenticatedUser -> UserIdentifier -> Digest SHA256 -> URI -> ServerT StateAPI AppM
+stateServer ::(MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadError ServerError m) => AuthResult AuthenticatedUser -> UserIdentifier -> Digest SHA256 -> URI -> ServerT StateAPI m
 stateServer au learner hash worksheet =
   putState au learner hash worksheet :<|>
   getState au learner hash worksheet
   
 type LearnerAPI = SAS.Auth '[SA.JWT] AuthenticatedUser :> "learners" :> Capture "learner" UserIdentifier :> "worksheets" :> Capture "worksheet" (Digest SHA256) :> Header' '[Required, Strict] "Worksheet" URI :> (ProgressAPI :<|> StateAPI)
 
-learnerServer :: SAS.CookieSettings -> SAS.JWTSettings -> ServerT LearnerAPI AppM
+learnerServer :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadError ServerError m) => SAS.CookieSettings -> SAS.JWTSettings -> ServerT LearnerAPI m
 learnerServer _ _ au learner hash worksheet =
   progressServer au learner hash worksheet :<|>
   stateServer au learner hash worksheet
   
 type API = WorksheetAPI :<|> LearnerAPI
                                                                                            
-server :: SAS.CookieSettings -> SAS.JWTSettings -> ServerT API AppM
+server :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, HasSymmetricJWK r, MonadError ServerError m) => SAS.CookieSettings -> SAS.JWTSettings -> ServerT API m
 server cookie jwt = worksheetServer cookie jwt :<|> learnerServer cookie jwt 
 

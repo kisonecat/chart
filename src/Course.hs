@@ -33,13 +33,14 @@ import Data.Typeable
 
 import Data.ByteString.Char8 (pack)
 
-import AppM ( AppM, AppCtx, getConfiguration, getPool )
+import AppM ( AppM, AppCtx, HasConfiguration(..), getPool, MonadDB(..) )
 import Configuration ( getHostname )
 
 import Control.Monad.Except (liftEither, throwError, runExceptT)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.Trans.Reader  (ReaderT, ask, asks)
+import Control.Monad.Reader
 import Control.Monad.Trans.Class
+import           Control.Monad.Except
 import Hashcash (Hashcash)
 import Data.Pool (withResource)
 
@@ -92,12 +93,10 @@ instance ToJSON Course where
 
 type ReadAPI = Hashcash :> Get '[JSON] Course
   
-readCourse :: AuthResult AuthenticatedUser -> CourseIdentifier -> AppM Course
-
+readCourse :: (MonadIO m, MonadDB m, MonadError ServerError m) => AuthResult AuthenticatedUser -> CourseIdentifier -> m Course
 readCourse (Authenticated au) cid@(CourseIdentifier name _) = do
   let key = pack $ "course:" ++ cs name
-  pool <- asks getPool
-  withResource pool $ \conn -> do
+  withConnection $ \conn -> do
     d <- liftIO $ R.runRedis conn $ R.hget key $ pack "description"
     case d of
       Left err -> throwError err500 { errBody = cs $ show err } 
@@ -107,18 +106,18 @@ readCourse _ _ = throwError err401
 
 type CreateAPI = ReqBody '[JSON] Course :> Post '[JSON] Course
   
-createCourse :: AuthResult AuthenticatedUser -> CourseIdentifier -> Course -> AppM Course
+createCourse ::  (MonadError ServerError m) => AuthResult AuthenticatedUser -> CourseIdentifier -> Course -> m Course
 -- createCourse (Authenticated au) u = pure $ Course (CourseIdentifier "" Nothing) Nothing
 createCourse _ _ _ = throwError err401
 
 type UpdateAPI = ReqBody '[JSON] Course :> (Put '[JSON] Course :<|> Patch '[JSON] Course)
 
-putCourse :: AuthResult AuthenticatedUser -> CourseIdentifier -> Course -> AppM Course
+putCourse :: (MonadError ServerError m) => AuthResult AuthenticatedUser -> CourseIdentifier -> Course -> m Course
 putCourse _ _ _ = throwError err401 
 
 type DeleteAPI = Delete '[JSON] ()
     
-deleteCourse :: AuthResult AuthenticatedUser -> CourseIdentifier -> AppM ()
+deleteCourse :: (MonadError ServerError m) => AuthResult AuthenticatedUser -> CourseIdentifier -> m ()
 deleteCourse (Authenticated au) u = pure ()
 deleteCourse _ _ = throwError err401 
 
@@ -126,7 +125,7 @@ type API = SAS.Auth '[SA.JWT] AuthenticatedUser :> "courses" :>
            Capture "course" CourseIdentifier :> 
            ( CreateAPI :<|> ReadAPI :<|> UpdateAPI :<|> DeleteAPI )
 
-canonicalizeCourseId :: CourseIdentifier -> AppM CourseIdentifier
+canonicalizeCourseId :: (MonadReader r m, HasConfiguration r) => CourseIdentifier -> m CourseIdentifier
 canonicalizeCourseId (CourseIdentifier name Nothing) = do
   config <- asks getConfiguration
   let domain :: Text
@@ -134,7 +133,7 @@ canonicalizeCourseId (CourseIdentifier name Nothing) = do
   pure $ CourseIdentifier name $ Just domain 
 canonicalizeCourseId cid = pure cid
 
-isCourseHomedHere :: CourseIdentifier -> AppM Bool
+isCourseHomedHere :: (MonadReader r m, HasConfiguration r) => CourseIdentifier -> m Bool
 isCourseHomedHere cid@(CourseIdentifier name Nothing) = do
   cid' <- canonicalizeCourseId cid
   isCourseHomedHere cid'
@@ -144,7 +143,7 @@ isCourseHomedHere (CourseIdentifier name (Just domain)) = do
       domain' = cs $ getHostname config 
   pure $ domain == domain' 
 
-ensureCourseHomedHere :: CourseIdentifier -> AppM CourseIdentifier
+ensureCourseHomedHere :: (MonadReader r m, HasConfiguration r, MonadError ServerError m) => CourseIdentifier -> m CourseIdentifier
 ensureCourseHomedHere cid = do
   cid' <- canonicalizeCourseId cid
   b <- isCourseHomedHere cid'
@@ -152,14 +151,14 @@ ensureCourseHomedHere cid = do
     then pure cid' 
     else throwError err404 { errBody = "Course not in this domain" }
 
-updateCourse :: AuthResult AuthenticatedUser -> CourseIdentifier -> ServerT UpdateAPI AppM 
+updateCourse :: (MonadReader r m, HasConfiguration r, MonadError ServerError m) => AuthResult AuthenticatedUser -> CourseIdentifier -> ServerT UpdateAPI m 
 updateCourse au c cc = do
   f putCourse au c cc :<|> f putCourse au c cc
   where f g a c cc = do
           c' <- ensureCourseHomedHere c 
           g a c' cc
 
-server :: SAS.CookieSettings -> SAS.JWTSettings -> ServerT API AppM
+server :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadError ServerError m) => SAS.CookieSettings -> SAS.JWTSettings -> ServerT API m
 server _ _ au c = do
          createCourse au c :<|> readCourse au c :<|> updateCourse au c :<|> deleteCourse au c
 

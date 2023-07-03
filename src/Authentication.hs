@@ -6,6 +6,7 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Authentication ( API, server,
                         AuthenticatedUser(username, domain, subject, audience), authCheck ) where
@@ -28,7 +29,8 @@ import Data.ByteString.Char8 (pack)
 
 import Network.HTTP.Media ((//), (/:))
 
-import Control.Monad.Trans.Reader  (ReaderT, ask, asks)
+import Control.Monad.Reader
+import Control.Monad.Except
 
 import Crypto.JWT (signClaims, SignedJWT, ClaimsSet, emptyClaimsSet, Audience(..))
 import Crypto.JWT (claimAud, claimIss, claimSub)
@@ -36,7 +38,7 @@ import Crypto.JWT (stringOrUri, string, uri)
 
 import qualified Text.Email.Validate as Email
 
-import AppM ( AppM, AppCtx, getPool )
+import AppM ( AppM, AppCtx, HasConfiguration(..), MonadDB(..) )
 
 import qualified Crypto.JOSE.JWK as JOSE
 import Crypto.JOSE
@@ -118,20 +120,20 @@ authCheck config conn (BasicAuthData login password) = do
                                            }
       else SAS.BadPassword
 
-bestAlg :: AuthenticatedUser -> SAS.JWTSettings -> IO (Either Crypto.JOSE.Error Crypto.JWT.SignedJWT)
+bestAlg :: (MonadRandom m) => AuthenticatedUser -> SAS.JWTSettings -> m (Either Crypto.JOSE.Error Crypto.JWT.SignedJWT)
 bestAlg u jwt  = runExceptT $ do
   let jwk = signingKey jwt
   alg <- JOSE.bestJWSAlg jwk
   let claims = encodeJWT u
   signClaims jwk (newJWSHeader ((), alg)) claims
 
-userToken :: SAS.JWTSettings -> AuthResult AuthenticatedUser -> String -> AppM SignedJWT 
+userToken :: (MonadRandom m, MonadError ServerError m) => SAS.JWTSettings -> AuthResult AuthenticatedUser -> String -> m SignedJWT 
 userToken jwt (SAS.Authenticated u) _user = do
   --let jwk = signingKey jwt
   --alg <- liftIO $ bestAlg jwt 
   --let claims = encodeJWT u
   --signed <- signClaims jwk (newJWSHeader ((), alg)) claims
-  signed <- liftIO $ bestAlg u jwt
+  signed <- bestAlg u jwt
   case signed of
      Left _ -> throwError err500
      -- Right j -> pure $ Book $ cs $ encodeCompact j
@@ -139,20 +141,19 @@ userToken jwt (SAS.Authenticated u) _user = do
   
 userToken _ _ _ = throwError err401
   
-userAuthorize :: AuthResult AuthenticatedUser -> String -> AppM () 
+userAuthorize :: (MonadError ServerError m) => AuthResult AuthenticatedUser -> String -> m () 
 userAuthorize (SAS.Authenticated _adminAuthenticatedUser) _user = pure () 
 userAuthorize _ _ = throwError err401
 
-postUser :: AuthResult AuthenticatedUser -> String -> AppM () 
+postUser :: (MonadIO m, MonadError ServerError m, MonadDB m) => AuthResult AuthenticatedUser -> String -> m () 
 postUser SAS.Indefinite email =
   if not $ Email.isValid (cs email)
     then throwError err401 { errBody = "Invalid email" }
     else do
-      pool <- asks getPool
-      withResource pool $ \conn -> do
-        name <- liftIO $ stringRandomIO "[a-z]{16}"
-        password <- liftIO $ stringRandomIO "[a-z]{16}"
-        hashed <- liftIO $ hashPasswordUsingPolicy slowerBcryptHashingPolicy (cs password)
+      name <- liftIO $ stringRandomIO "[a-z]{16}"
+      password <- liftIO $ stringRandomIO "[a-z]{16}"
+      hashed <- liftIO $ hashPasswordUsingPolicy slowerBcryptHashingPolicy (cs password)
+      withConnection $ \conn -> do
         _ <- case hashed of
           Nothing -> throwError err401 { errBody = "Could not calculate hash" }
           Just hashed' ->
@@ -165,5 +166,5 @@ postUser SAS.Indefinite email =
   
 postUser _ _ = throwError err401
 
-server :: SAS.CookieSettings -> SAS.JWTSettings -> ServerT API AppM
+server :: (MonadRandom m, MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadError ServerError m) => SAS.CookieSettings -> SAS.JWTSettings -> ServerT API m
 server _cookies jwt u v = postUser u v :<|> userToken jwt u v :<|> userAuthorize u v 
