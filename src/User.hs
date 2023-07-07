@@ -132,14 +132,13 @@ ensureIssuerMatchesUserIdentifier _ _ = throwError err401
 
 lookupUser :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadError ServerError m) => UserIdentifier -> m User
 lookupUser (UserIdentifier name Nothing) = do
-  withConnection $ \conn -> do
-    maybeUser <- liftIO $ R.runRedis conn $ R.get $ pack $ "user:" ++ cs name
-    case maybeUser of
-      Left _ -> throwError err500
-      Right Nothing -> throwError err404
-      Right (Just j) -> case eitherDecodeStrict j of
-                          Left _ -> throwError err500
-                          Right user -> pure user
+  maybeUser <- rget $ pack $ "user:" ++ cs name
+  case maybeUser of
+    Left _ -> throwError err500
+    Right Nothing -> throwError err404
+    Right (Just j) -> case eitherDecodeStrict j of
+                        Left _ -> throwError err500
+                        Right user -> pure user
 lookupUser (UserIdentifier name (Just d)) = do
   d' <- thisDomain
   if d' == d

@@ -96,12 +96,11 @@ type ReadAPI = Hashcash :> Get '[JSON] Course
 readCourse :: (MonadIO m, MonadDB m, MonadError ServerError m) => AuthResult AuthenticatedUser -> CourseIdentifier -> m Course
 readCourse (Authenticated au) cid@(CourseIdentifier name _) = do
   let key = pack $ "course:" ++ cs name
-  withConnection $ \conn -> do
-    d <- liftIO $ R.runRedis conn $ R.hget key $ pack "description"
-    case d of
-      Left err -> throwError err500 { errBody = cs $ show err } 
-      Right Nothing -> throwError err404 { errBody = "Course not found" }
-      Right (Just description) -> pure $ Course cid $ Just $ cs description
+  d <- hget key $ pack "description"
+  case d of
+    Left err -> throwError err500 { errBody = cs $ show err } 
+    Right Nothing -> throwError err404 { errBody = "Course not found" }
+    Right (Just description) -> pure $ Course cid $ Just $ cs description
 readCourse _ _ = throwError err401
 
 type CreateAPI = ReqBody '[JSON] Course :> Post '[JSON] Course

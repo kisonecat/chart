@@ -9,7 +9,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 
 module Authentication ( API, server,
-                        AuthenticatedUser(username, domain, subject, audience), authCheck ) where
+                        AuthenticatedUser(..), authCheck ) where
 
 import GHC.Generics ( Generic )
 import Data.Text ( Text, unpack )  
@@ -97,28 +97,32 @@ instance Accept JSONWebToken where
 instance {-# OVERLAPPING #-} ToCompact a => MimeRender JSONWebToken a where
     mimeRender _ = encodeCompact
 
-type instance BasicAuthCfg = BasicAuthData -> IO (AuthResult AuthenticatedUser)
+instance MimeUnrender JSONWebToken SignedJWT where
+  mimeUnrender _ bs = case decodeCompact bs of
+    Left err -> Left . show $ (err :: Error)
+    Right jwt -> Right jwt
 
-instance FromBasicAuthData AuthenticatedUser where
-  fromBasicAuthData authData authCheckFunction = authCheckFunction authData
+type instance BasicAuthCfg = BasicAuthData -> IO (BasicAuthResult AuthenticatedUser)
 
-type API = SAS.Auth '[SA.BasicAuth] AuthenticatedUser :> "users" :> Capture "user" String :> ( Post '[JSON] ()  :<|> "token" :> Get '[JSONWebToken] SignedJWT  :<|> "authorize" :> Get '[JSON] () )
+--instance FromBasicAuthData AuthenticatedUser where
+--  fromBasicAuthData authData authCheckFunction = authCheckFunction authData
+
+type API = "users" :> Capture "user" String :> ( Post '[JSON] ()  :<|> (Servant.BasicAuth "doenet" AuthenticatedUser :> "token" :> Get '[JSONWebToken] SignedJWT)  :<|> ( Servant.BasicAuth "doenet" AuthenticatedUser :> "authorize" :> Get '[JSON] () ) )
 
 authCheck :: Configuration -> R.Connection
-          -> BasicAuthData
-          -> IO (AuthResult AuthenticatedUser)
-authCheck config conn (BasicAuthData login password) = do
+          -> BasicAuthCheck AuthenticatedUser
+authCheck config conn = BasicAuthCheck $ \(BasicAuthData login password) -> do
   maybeHashed <- R.runRedis conn $ R.get $ pack ("pw:" ++ cs login)
   pure $ case maybeHashed of
-    Left _ -> SAS.Indefinite
-    Right Nothing -> SAS.NoSuchUser
+    Left _ -> Servant.Unauthorized
+    Right Nothing -> Servant.NoSuchUser
     Right (Just hashed) -> if validatePassword hashed password
-      then Authenticated AuthenticatedUser { username = cs login
-                                           , domain = cs $ getHostname config
-                                           , subject = Nothing
-                                           , audience = Nothing
-                                           }
-      else SAS.BadPassword
+      then Servant.Authorized AuthenticatedUser { username = cs login
+                                                , domain = cs $ getHostname config
+                                                , subject = Nothing
+                                                , audience = Nothing
+                                                }
+      else Servant.BadPassword
 
 bestAlg :: (MonadRandom m) => AuthenticatedUser -> SAS.JWTSettings -> m (Either Crypto.JOSE.Error Crypto.JWT.SignedJWT)
 bestAlg u jwt  = runExceptT $ do
@@ -127,8 +131,8 @@ bestAlg u jwt  = runExceptT $ do
   let claims = encodeJWT u
   signClaims jwk (newJWSHeader ((), alg)) claims
 
-userToken :: (MonadRandom m, MonadError ServerError m) => SAS.JWTSettings -> AuthResult AuthenticatedUser -> String -> m SignedJWT 
-userToken jwt (SAS.Authenticated u) _user = do
+userToken :: (MonadRandom m, MonadError ServerError m) => SAS.JWTSettings ->  String -> AuthenticatedUser ->m SignedJWT 
+userToken jwt _user u = do
   --let jwk = signingKey jwt
   --alg <- liftIO $ bestAlg jwt 
   --let claims = encodeJWT u
@@ -141,30 +145,29 @@ userToken jwt (SAS.Authenticated u) _user = do
   
 userToken _ _ _ = throwError err401
   
-userAuthorize :: (MonadError ServerError m) => AuthResult AuthenticatedUser -> String -> m () 
-userAuthorize (SAS.Authenticated _adminAuthenticatedUser) _user = pure () 
+userAuthorize :: (MonadError ServerError m) => String -> AuthenticatedUser -> m () 
+userAuthorize _adminAuthenticatedUser _user = pure () 
 userAuthorize _ _ = throwError err401
 
-postUser :: (MonadIO m, MonadError ServerError m, MonadDB m) => AuthResult AuthenticatedUser -> String -> m () 
-postUser SAS.Indefinite email =
+postUser :: (MonadIO m, MonadError ServerError m, MonadDB m) => String -> m () 
+postUser email =
   if not $ Email.isValid (cs email)
     then throwError err401 { errBody = "Invalid email" }
     else do
       name <- liftIO $ stringRandomIO "[a-z]{16}"
       password <- liftIO $ stringRandomIO "[a-z]{16}"
       hashed <- liftIO $ hashPasswordUsingPolicy slowerBcryptHashingPolicy (cs password)
-      withConnection $ \conn -> do
-        _ <- case hashed of
-          Nothing -> throwError err401 { errBody = "Could not calculate hash" }
-          Just hashed' ->
-            liftIO $ R.runRedis conn $ R.set (cs ("pw:" ++ cs name)) hashed'
+      _ <- case hashed of
+        Nothing -> throwError err401 { errBody = "Could not calculate hash" }
+        Just hashed' ->
+          rset (cs ("pw:" ++ cs name)) hashed'
 
-        -- should email with the given address
-        liftIO $ putStrLn $ "username: " ++ cs name ++ " password: " ++ cs password
+      -- should email with the given address
+      liftIO $ putStrLn $ "username: " ++ cs name ++ " password: " ++ cs password
       
       pure ()
   
-postUser _ _ = throwError err401
+postUser _ = throwError err401
 
 server :: (MonadRandom m, MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadError ServerError m) => SAS.CookieSettings -> SAS.JWTSettings -> ServerT API m
-server _cookies jwt u v = postUser u v :<|> userToken jwt u v :<|> userAuthorize u v 
+server _cookies jwt u = postUser u :<|> userToken jwt u :<|> userAuthorize u 

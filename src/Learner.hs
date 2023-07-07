@@ -140,24 +140,22 @@ getProgress :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, Monad
 getProgress au uid@(UserIdentifier name _) digest uri = do
   ensureDigestMatches digest uri
   ensureIssuerMatchesUserIdentifier au uid
-  withConnection $ \conn -> do
-    let key = pack $ "score:" ++ cs name
-    d <- liftIO $ R.runRedis conn $ R.zscore key (convert digest)
-    case d of
-      Left err -> throwError err500 { errBody = cs $ show err } 
-      Right Nothing -> pure 0.0
-      Right (Just score) -> pure score
+  let key = pack $ "score:" ++ cs name
+  d <- zscore key (convert digest)
+  case d of
+    Left err -> throwError err500 { errBody = cs $ show err } 
+    Right Nothing -> pure 0.0
+    Right (Just score) -> pure score
   
 putProgress :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadError ServerError m) => AuthResult AuthenticatedUser -> UserIdentifier -> Digest SHA256 -> URI -> Double -> m NoContent
 putProgress au uid@(UserIdentifier name _) digest uri score = do
   ensureDigestMatches digest uri
   ensureIssuerMatchesUserIdentifier au uid
-  withConnection $ \conn -> do
-    let key = pack $ "score:" ++ cs name
-    d <- liftIO $ R.runRedis conn $ R.zadd key [(score, convert digest)]
-    case d of
-      Left err -> throwError err500 { errBody = cs $ show err } 
-      Right _ -> pure NoContent
+  let key = pack $ "score:" ++ cs name
+  d <- zadd key score $ convert digest
+  case d of
+    Left err -> throwError err500 { errBody = cs $ show err } 
+    Right _ -> pure NoContent
   
 progressServer :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadError ServerError m) => AuthResult AuthenticatedUser -> UserIdentifier -> Digest SHA256 -> URI -> ServerT ProgressAPI m
 progressServer au learner hash worksheet  =
@@ -170,33 +168,31 @@ getState :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadErr
 getState au uid@(UserIdentifier name _) digest uri = do
   ensureDigestMatches digest uri
   ensureIssuerMatchesUserIdentifier au uid
-  withConnection $ \conn -> do
-    let key = pack $ "state:" ++ cs name
-    d <- liftIO $ R.runRedis conn $ R.hget key (convert digest)
-    case d of
-      Left err -> throwError err500 { errBody = cs $ show err } 
-      Right Nothing -> pure $ toJSON ([] :: [Int])
-      Right (Just bs) -> case decode $ decompress $ cs bs of
-        Nothing -> throwError err500
-        Just v -> pure v
+  let key = pack $ "state:" ++ cs name
+  d <- hget key (convert digest)
+  case d of
+    Left err -> throwError err500 { errBody = cs $ show err } 
+    Right Nothing -> pure $ toJSON ([] :: [Int])
+    Right (Just bs) -> case decode $ decompress $ cs bs of
+      Nothing -> throwError err500
+      Just v -> pure v
   
 putState :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadError ServerError m) => AuthResult AuthenticatedUser -> UserIdentifier -> Digest SHA256 -> URI -> Value -> m NoContent
 putState au uid@(UserIdentifier name _) digest uri value = do
   ensureDigestMatches digest uri
   ensureIssuerMatchesUserIdentifier au uid
-  withConnection $ \conn -> do
-    let key = pack $ "state:" ++ cs name
-    let compressedValue = cs $ compress $ encode value
-    d <- liftIO $ R.runRedis conn $ R.hset key (convert digest) compressedValue
-    case d of
-      Left err -> throwError err500 { errBody = cs $ show err } 
-      Right _ -> pure NoContent
+  let key = pack $ "state:" ++ cs name
+  let compressedValue = cs $ compress $ encode value
+  d <- hset key (convert digest) compressedValue
+  case d of
+    Left err -> throwError err500 { errBody = cs $ show err } 
+    Right _ -> pure NoContent
   
 stateServer ::(MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadError ServerError m) => AuthResult AuthenticatedUser -> UserIdentifier -> Digest SHA256 -> URI -> ServerT StateAPI m
 stateServer au learner hash worksheet =
   putState au learner hash worksheet :<|>
   getState au learner hash worksheet
-  
+
 type LearnerAPI = SAS.Auth '[SA.JWT] AuthenticatedUser :> "learners" :> Capture "learner" UserIdentifier :> "worksheets" :> Capture "worksheet" (Digest SHA256) :> Header' '[Required, Strict] "Worksheet" URI :> (ProgressAPI :<|> StateAPI)
 
 learnerServer :: (MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, MonadError ServerError m) => SAS.CookieSettings -> SAS.JWTSettings -> ServerT LearnerAPI m
