@@ -35,6 +35,7 @@ executable doenetchart
                      , Learner
                      , AppM
                      , App
+                     , MockM
                      , LTI
                      
   build-depends:       base
@@ -99,6 +100,7 @@ test-suite doenetchart-test
                      , Learner
                      , AppM
                      , LTI
+                     , MockM
                      
   build-depends:       base
                      , aeson >= 2 

@@ -32,23 +32,34 @@ import qualified Authentication (API)
 import Crypto.JWT (SignedJWT)
   
 import User (UserIdentifier(..))
-import Servant.Auth.Client
+import Servant.Auth.Client (Token(..))
+
 import qualified Learner (API)
 import Test.Hspec
 import Test.Hspec.Wai
 import Test.Hspec.Wai.Matcher
 
+import Crypto.JWT
+
 import App (TheAPI, server, testApplication)
 import Network.Wai.Handler.Warp
     (setLogger, setPort, getPort, runSettings, defaultSettings )
+import Data.ByteString.Char8 (pack)
+  
+import Data.Text.Lazy (toStrict)
+import Data.String.Conversions (cs)
+import Data.Text.Lazy.Encoding (decodeUtf8)
 
+import Network.URI
+import Data.Maybe (fromJust)
+  
 data UserClient = UserClient 
   { authenticationClient :: [Char] -> AuthenticationClient
   }
 
 data AuthenticationClient = AuthenticationClient 
   { postUser :: ClientM ()
-  , getToken :: BasicAuthData -> ClientM SignedJWT
+  , getJWT :: BasicAuthData -> ClientM SignedJWT
   , getAuthorize :: BasicAuthData -> ClientM ()
   }
 
@@ -65,7 +76,7 @@ mkAuthenticationClient uid = AuthenticationClient{..}
    where
      api = Proxy :: Proxy Authentication.API 
      authenticationClient = client api
-     postUser :<|> (getToken :<|> getAuthorize) = authenticationClient uid
+     postUser :<|> (getJWT :<|> getAuthorize) = authenticationClient uid
     
 data LearnerClient = LearnerClient 
   { redirectToWorksheet :: Token -> Digest SHA256 -> URI -> ClientM NoContent
@@ -105,9 +116,6 @@ try port action = do
 businessLogicSpec :: Spec
 businessLogicSpec =
   around withApp $ do
-    --let p = postUser . authenticationClient $ mkUserClient
-    --let pt = 8080
-    -- testing scenarios start here
     describe "POST /user" $ do
       it "should create a user with a high enough ID" $ \port -> do
         result <- try port $ postUser $ mkAuthenticationClient "test@test.com" 
@@ -115,16 +123,28 @@ businessLogicSpec =
           Left err -> error $ show err
           Right _ -> return ()
 
-spec2 :: Spec
-spec2 = do
-  businessLogicSpec
-  
 spec :: Spec
 spec = do
-    describe "arithmetic" $ do
-      it "five == five" $ do -- \port -> do
-        (pure 5) `shouldReturn` 5
-  
+  around withApp $ do
+    describe "GET /learners" $ do
+      it "progress is initialized to zero" $ \port -> do
+        result <- try port $ (getJWT $ mkAuthenticationClient "test") BasicAuthData { basicAuthUsername = "test", basicAuthPassword = "password" }
+        let uid = UserIdentifier { username = "test"
+                                 , domain = Nothing
+                                 }
+        let url = fromJust $ parseURI "https://example.com/worksheet"
+        let digest = hashWith SHA256 (pack $ uriToString id url "")
+        progress <- case result of
+          Left err -> error $ show err
+          Right signedJWT ->
+            let token = Token { getToken = cs $ encodeCompact signedJWT }
+            in try port $ getProgress $ ((mkProgressStateClient mkLearnerClient) token uid digest url)
+        progress' <- case progress of
+          Left err -> error $ show err
+          Right x -> pure x
+        progress' `shouldBe` 0
+
+
 main :: IO ()
 main = hspec $ do
   spec

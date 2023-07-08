@@ -137,7 +137,7 @@ testApplication = do
   symmetricJwk <- generateKey
   let config = updateHostname hostname defaultConfiguration
   let port = 8000
-  let ctx = AppCtx { getJWK = undefined,
+  let ctx = AppCtx { getJWK = symmetricJwk,
                      _getSymmetricJWK = symmetricJwk,
                      _getConfiguration = config,
                      getPool = undefined }
