@@ -143,6 +143,30 @@ spec = do
           Left err -> error $ show err
           Right x -> pure x
         progress' `shouldBe` 0
+  
+      it "progress can be set and read" $ \port -> do
+        result <- try port $ (getJWT $ mkAuthenticationClient "test") BasicAuthData { basicAuthUsername = "test", basicAuthPassword = "password" }
+        let uid = UserIdentifier { username = "test"
+                                 , domain = Nothing
+                                 }
+        let url = fromJust $ parseURI "https://example.com/worksheet"
+        let digest = hashWith SHA256 (pack $ uriToString id url "")
+        let url' = fromJust $ parseURI "https://example.com/worksheet2"
+        let digest' = hashWith SHA256 (pack $ uriToString id url' "")
+        progress <- case result of
+          Left err -> error $ show err
+          Right signedJWT ->
+            let token = Token { getToken = cs $ encodeCompact signedJWT }
+            in do
+              try port $ do
+                putProgress ((mkProgressStateClient mkLearnerClient) token uid digest url) 0.17
+                putProgress ((mkProgressStateClient mkLearnerClient) token uid digest' url') 0.17
+                getProgress $ ((mkProgressStateClient mkLearnerClient) token uid digest url)
+                getProgress $ ((mkProgressStateClient mkLearnerClient) token uid digest url)
+        progress' <- case progress of
+          Left err -> error $ show err
+          Right x -> pure x
+        progress' `shouldBe` 0.17
 
 
 main :: IO ()

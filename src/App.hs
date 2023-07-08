@@ -68,7 +68,7 @@ import Control.Monad (void)
 import JsonWorkProof
 import Authentication (AuthenticatedUser(..), authCheck)
 import AppM ( AppCtx(..), AppM(..), MonadDB(..), HasConfiguration(..), HasSymmetricJWK(..) )
-import MockM ( MockM(..) )
+import MockM ( MockM(..), MockDatabase )
 
 import Control.Monad.IO.Class
 import Control.Monad.Reader
@@ -152,9 +152,10 @@ testApplication = do
                                                        }
   let cookies = defaultCookieSettings
   let cfg = (BasicAuthCheck authCfg) :. jwtCfg :. cookies :. EmptyContext
-  pure $ serveWithContext api cfg $ hoistServerWithContext api (Proxy :: Proxy '[BasicAuthCheck AuthenticatedUser, R.Connection,  SAS.CookieSettings, SAS.JWTSettings]) (nt' ctx) (server cookies jwtCfg)
-    where nt' :: AppCtx -> MockM a -> Handler a
-          nt' s x = fst <$> runStateT (runReaderT (runMock x) s) Map.empty
+  initialDatabase <- atomically $ newTVar Map.empty
+  pure $ serveWithContext api cfg $ hoistServerWithContext api (Proxy :: Proxy '[BasicAuthCheck AuthenticatedUser, R.Connection,  SAS.CookieSettings, SAS.JWTSettings]) (nt' (ctx, initialDatabase)) (server cookies jwtCfg)
+    where nt' :: (AppCtx, TVar MockDatabase) -> MockM a -> Handler a
+          nt' s x = runReaderT (runMock x) s
 
 theApplicationWithSettings :: Settings -> IO Application
 theApplicationWithSettings settings = do
