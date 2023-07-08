@@ -82,7 +82,8 @@ import qualified Authentication
 import qualified Learner
 
 type TheAPI = Authentication.API :<|>
-  -- User.API :<|> Course.API :<|>
+  User.API :<|>
+  -- Course.API :<|>
   Learner.API
 
 api :: Proxy TheAPI
@@ -91,7 +92,7 @@ api = Proxy
 server :: (MonadRandom m, MonadIO m, MonadDB m, MonadReader r m, HasConfiguration r, HasSymmetricJWK r, MonadError ServerError m) => SAS.CookieSettings -> SAS.JWTSettings -> ServerT TheAPI m
 server _cookies jwt =
   Authentication.server _cookies jwt :<|>
---  User.server _cookies jwt :<|>
+  User.server _cookies jwt :<|>
 --  Course.server _cookies jwt :<|>
   Learner.server _cookies jwt
 
